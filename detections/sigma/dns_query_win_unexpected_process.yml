@@ -4,12 +4,21 @@ status: experimental
 description: |
     Detects a Sysmon Event ID 22 DNS query issued by a local utility that has no reason to resolve
     a hostname - discovery binaries (whoami, systeminfo, ipconfig, arp, tasklist, quser, hostname)
-    and simple desktop applications (notepad, calc, mspaint). A name lookup from one of these
-    almost always means the image on disk is not what its filename says, or that something is
-    injected into it.
+    and simple desktop applications (notepad, calc, mspaint). Most of these binaries have no
+    reason to resolve a hostname at all, so a name lookup from one is worth a look: the readings
+    that fit are that the image on disk is not what its filename says, that something is injected
+    into it, or that it was invoked with remote-administration arguments. Which of the three it is
+    cannot be decided from the DNS event alone.
     Lab measurement that motivated the rule: Sysmon Event ID 22 is ingested and has zero detection
     coverage. In the 2026-08-11 B4 exercise, 1 Sysmon 22 event was generated (QueryStatus 9501,
     no records) and 0 alerts were raised. The DNS channel arrives at the SIEM and no rule reads it.
+    What this rule covers, and what it does not: the one measured Sysmon 22 event was the lookup of
+    b4marca.example.com issued by powershell.exe, the child of the B4 process tree. powershell.exe
+    is not in the image list below and is not going to be - an interpreter resolving a name is
+    ordinary - so this rule would not have fired on the event that exposed the gap. It covers a
+    different case on the same uncovered channel. The measured case, an interpreter resolving an
+    external name, is the subject of the companion network rule
+    (net_connection_win_script_interpreter_external_dest.yml) and is not covered here.
     Related measurement from the same exercise (2026-08-11): Sysmon Event ID 1 carries
     OriginalFileName - it reported PowerShell.EXE for powershell.exe - and that field survives a
     rename, while Security 4688 has no equivalent. A renamed system binary is therefore
@@ -63,6 +72,19 @@ falsepositives:
     - notepad.exe can resolve a name when a file is opened from a UNC path typed as a hostname,
       and mspaint.exe can do the same. Both are rare on a workstation and worth a look when they
       happen.
+    - quser.exe, tasklist.exe and systeminfo.exe all accept a remote target (/SERVER:, /S) and
+      resolve it as a matter of course, so on a host used for remote administration these are
+      routine rather than anomalous. The discriminator is the command line of the process that
+      owns the ProcessGuid, not the DNS event - a lookup with no matching remote-target argument
+      in the corresponding Sysmon Event ID 1 is the interesting one. This rule cannot make that
+      join on its own.
+    - This rule is written against the dns_query category rather than against a pinned Channel and
+      EventID, which keeps it portable. The cost is that it converts correctly only with a
+      pipeline that knows the category. With the ecs_windows pipeline alone the log-source
+      restriction is dropped silently and the query degenerates to "any event whose image ends in
+      whoami.exe, ipconfig.exe, ...", which matches ordinary process creation and would alert on
+      every whoami in the lab. Convert it with the sysmon pipeline as well. That is a conversion
+      requirement, not a rule defect, but getting it wrong inverts the rule's behaviour.
     - Any of these images running from a directory other than System32 is the interesting case;
       if the environment has a legitimate third-party binary with one of these filenames, exclude
       it by full Image path, never by filename alone, or the rule becomes blind to exactly the

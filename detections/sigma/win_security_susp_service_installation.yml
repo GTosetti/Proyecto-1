@@ -9,14 +9,18 @@ description: |
   This rule exists because of a measured detection gap, not because 4697 is exotic. In the
   home lab on 2026-08-08 a test service was installed at 21:44:56 local time.
   Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4697} returned the event, the
-  Security channel is declared in the Wazuh agent configuration so the event was forwarded,
+  Security channel is declared in the agent configuration and the agent reported connected,
   and yet a query of the wazuh-alerts-* index returned 0 documents with Event ID 4697: no
   rule in the stock ruleset matches it. The same real-world fact - a service was installed -
   did produce an alert, through Event ID 7045 from the System channel.
-  That is a hole in the third layer of coverage. Generation worked, collection worked,
-  detection did not, and a gap in that third layer produces no error, no missing-alert
-  indicator and nothing to search for. It is invisible from the dashboard; the only way to
-  find it is to cause the event deliberately and check whether it arrives.
+  That reads as a hole in the third layer of coverage: generation worked, detection did not.
+  Stated precisely, because the evidence does not go as far as the conclusion: collection is
+  expected but was not independently verified. Wazuh indexes only what matched a rule, so
+  without archives logging there is no observation that separates "the event reached the
+  manager and no rule matched it" from "the event never reached the manager". Either way the
+  gap produces no error, no missing-alert indicator and nothing to search for; it is
+  invisible from the dashboard, and the only way to find it is to cause the event
+  deliberately and check whether an alert arrives.
   Keep the 7045 rule as well. The two events describe the same fact with different fields:
   7045 carries the image path and start type, 4697 additionally carries SubjectUserName and
   SubjectLogonId, which is the account that installed the service - the field that turns
@@ -32,7 +36,7 @@ references:
   - https://attack.mitre.org/techniques/T1543/003/
   - https://attack.mitre.org/techniques/T1036/004/
   - >-
-    Lab measurement 2026-08-08: Security 4697 present at 21:44:56 local, forwarded by the agent, 0 matching
+    Lab measurement 2026-08-08: Security 4697 present at 21:44:56 local, channel declared to the agent, 0 matching
     documents in wazuh-alerts-*; the same service installation alerted via System 7045
 author: Proyecto-1 home SOC lab
 date: 2026-09-15

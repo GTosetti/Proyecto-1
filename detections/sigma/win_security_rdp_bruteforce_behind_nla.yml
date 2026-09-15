@@ -60,14 +60,22 @@ description: |
   Base event: the RDP listener handled an incoming connection. Used only as corroboration,
   to tell an analyst that the network logon failures on the same host in the same window
   were RDP and not SMB.
-  Event ID 1149 ('Remote Desktop Services: User authentication succeeded') was measured in
-  the home lab on 2026-09-07 at 18:33:30-18:33:31, carrying Source Network Address
-  10.10.10.5, during the same minute as the four failed RDP logons. Event ID 261
-  ('Listener RDP-Tcp received a connection') is included because it is written when the
-  listener accepts a connection regardless of the authentication outcome, which makes it the
-  better corroborator for a pure-failure burst - but it was NOT separately confirmed in the
-  lab during the failed attempts, so that half of this selection is unvalidated and is
-  flagged as such rather than presented as measured.
+  Event ID 1149 is literally 'Remote Desktop Services: User authentication SUCCEEDED'. Read
+  the title before leaning on it: it is written when authentication works, not when it fails.
+  The two 1149 events measured in the home lab on 2026-09-07 at 18:33:30-18:33:31, carrying
+  Source Network Address 10.10.10.5, belong to the two auth-only authentications that
+  succeeded, not to the four failed RDP logons one second earlier at 18:33:28-18:33:29. They
+  corroborate that RDP was the protocol in that window; they are not evidence of the failures.
+  An attacker who never guesses the password produces the 4625 burst and no 1149 at all.
+  Event ID 261 ('Listener RDP-Tcp received a connection') is included because it is written
+  when the listener accepts a connection regardless of the authentication outcome, which
+  makes it the only corroborator that a pure-failure burst should produce - but it was NOT
+  separately confirmed in the lab during the failed attempts, so that half of this selection
+  is unvalidated and is flagged as such rather than presented as measured. Confirming it is
+  one exercise: four deliberately wrong RDP passwords, then read
+  Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational. Until that is run,
+  the corroboration this rule can actually claim is "RDP listener activity on the same host
+  in the same window", which is weaker than the protocol attribution it was written for.
   The Channel value is repeated inside the detection on purpose. Converted on 2026-09-15
   with sigma-cli 3.1.0 and the ecs_windows pipeline, the logsource service
   terminalservices-remoteconnectionmanager has no mapping in that pipeline, and the channel
@@ -126,7 +134,18 @@ description: |
   two seconds, so the threshold is set at 4. Note that the SMB rate limiter measured on the
   same endpoint (EnableAuthRateLimiter = True, InvalidAuthenticationDelayTimeInMs = 2000)
   does not shape RDP attempts the way it shapes SMB ones, so an RDP burst can be tighter
-  than an SMB burst of the same size.
+  than an SMB burst of the same size. The threshold is fitted to a sample of one run and has
+  not been re-baselined against benign traffic; it is a starting value, not a measured one.
+  Grouping note: the group-by key is host.name rather than Computer. Converted on 2026-09-15
+  with sigma-cli 3.1.0, Computer has no mapping in ecs_windows and renders as
+  winlog.event_data.Computer, which does not exist in a Winlogbeat-shaped index; grouping on
+  an always-null key pools every host into one bucket, so four failures from four different
+  machines would raise one alert as though they came from one.
+  Window note: timespan converts to date_trunc, a fixed calendar bucket, not a sliding
+  window. Four failures split 2/2 across a bucket boundary never reach the threshold. The
+  thresholds here are not lowered to compensate, because the lower value has no measurement
+  behind it; the correct fix is a backend with a sliding window, which is what the Wazuh
+  timeframe implementation gives.
 references:
   - https://attack.mitre.org/techniques/T1110/001/
   - 'Lab measurement 2026-09-07: 4 x 4625 LogonType 3 from 10.10.10.5 at 18:33:28-18:33:29'
@@ -141,7 +160,7 @@ correlation:
   rules:
     - win_security_4625_logon_type_3
   group-by:
-    - Computer
+    - host.name
     - IpAddress
   timespan: 5m
   condition:
@@ -155,27 +174,43 @@ falsepositives:
   - >-
     Because the grouping includes the source address, a single misconfigured host produces one alert rather
     than one per attempt. The lab measured the opposite behaviour in the stock ruleset: Wazuh rule 60122 fired
-    20 times at level 5 during the 2026-09-07 exercise, one per failure.
+    20 times at level 5 as an aggregate over the whole 2026-09-07 exercise, one alert per matched failure. The
+    exercise recorded 22 type 3 failures in total, so two failures produced no 60122 at all; that gap has not
+    been explained and is a coverage observation in its own right.
 level: medium
 ---
-title: RDP Brute Force Behind Network Level Authentication
+title: Failed Network Logon Burst On A Host With Concurrent RDP Listener Activity
 id: e8face8b-5f25-43f7-8bbc-d9fc9b1cb046
 status: experimental
 description: |
   A burst of failed type 3 logons on a host that was also handling RDP listener activity in
-  the same five-minute window. This reclassifies a generic network logon failure burst as an
-  RDP attack, which the Security log alone cannot do when NLA is enabled.
+  the same five-minute window. The intent was an RDP brute force detection, which the
+  Security log alone cannot express when NLA is enabled; the title says what the measurement
+  supports instead, which is less.
   Measured basis, 2026-09-07 home lab: four failed RDP logins from 10.10.10.5 produced four
   4625 events with LogonType 3 - indistinguishable by logon type from the SMB failures
   recorded minutes earlier in the same exercise - while the Terminal Services channel
-  recorded the RDP context, including the source network address, separately. Neither
-  channel identifies the attack on its own; the pair does.
+  recorded the RDP context, including the source network address, separately.
+  Why this is not yet a brute force rule: the only corroborating event this lab captured was
+  1149, 'User authentication SUCCEEDED', produced by the two successful auth-only
+  authentications at 18:33:30-18:33:31 - not by the four failures at 18:33:28-18:33:29. A
+  brute force that never succeeds generates no 1149, which leaves only Event ID 261, and 261
+  has not been confirmed written on failed NLA attempts in this lab. So the pair demonstrated
+  here is "failure burst plus a successful RDP authentication", and the pair the title of a
+  brute force rule would need is "failure burst plus 261". Running the four-wrong-passwords
+  exercise and reading the RemoteConnectionManager channel is what would close the gap; until
+  then this rule may not correlate at all on the behaviour it was written for.
   Grouping caveat, stated because it weakens the rule and hiding it would be dishonest: the
   two channels do not share a field name for the source address (4625 uses IpAddress, 1149
   carries it in Param3, and 261 does not carry it at all), so the correlation groups by host
   and the analyst must compare the two addresses manually during triage. On a backend that
   supports field aliases, restrict the Terminal Services document to Event ID 1149 and alias
-  IpAddress to Param3 to group by source address directly.
+  IpAddress to Param3 to group by source address directly - but note that doing so restricts
+  the corroborator to the success event, which is the wrong half for a failure burst.
+  The group-by key is host.name, not Computer, for the reason given in the burst document:
+  Computer has no mapping in ecs_windows and converts to a column that does not exist, and a
+  null grouping key would marry a failure burst on host A to a legitimate RDP login on host
+  B - the exact false positive the first entry below says the host grouping bounds.
   Backend caveat, measured on 2026-09-15 with sigma-cli 3.1.0: this document references
   another correlation rule rather than a plain rule, which the Sigma specification allows but
   no installed backend renders usefully. The opensearch_lucene and lucene backends report
@@ -204,7 +239,7 @@ correlation:
     - win_security_4625_type_3_burst
     - win_terminalservices_rcm_connection
   group-by:
-    - Computer
+    - host.name
   timespan: 5m
 falsepositives:
   - >-

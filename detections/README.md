@@ -28,14 +28,24 @@ the agent's `ossec.conf`, and a `wazuh-alerts-*` query returned **0 documents** 
 System channel. Nothing on the dashboard indicated that half the evidence had been dropped.
 ([`../investigations/001-first-alert-triage.md`](../investigations/001-first-alert-triage.md))
 
+One caveat travels with that result everywhere it is used in this folder. Collection was confirmed by
+reading the agent's `ossec.conf`, not by watching the event arrive: the manager indexes what matched a
+rule, so an event that matched nothing leaves nothing to query. From the alert index alone, a layer-2
+failure and a layer-3 failure look identical. What narrows it here is circumstantial and worth stating
+as such: other Security-channel events from the same window did alert — 4720/4722 through rule 60109,
+4738 through 60110, 4726 through 60111, 4732/4733 through 60154 — so the channel was reaching the
+manager while 4697 produced nothing. That makes layer 3 the likely explanation, not a proven one. Step 3 below says what would
+prove it.
+
 So the rule for rules here is:
 
 > A rule is written to close a layer-3 hole that has been demonstrated with a query. If the hole is
 > in layer 1 or layer 2, a rule cannot fix it, and pretending otherwise is worse than leaving the
 > gap open — it puts a green tick over a blind spot.
 
-Two consequences, both visible in this folder: it is small, and it contains a section for gaps that
-are deliberately **not** being closed with a rule.
+Two consequences, both visible in this folder: it is small — 21 rule documents, each traceable to a
+dated measurement — and it contains a section for gaps that are deliberately **not** being closed
+with a rule.
 
 ---
 
@@ -53,9 +63,15 @@ inventory table.
    text is the same for events that mean different things. Measured example: ten 4625 events on
    2026-08-08 read identically and split cleanly into five logon type 2 (local `runas`, `seclogo`,
    `::1`) and five logon type 3 (SMB from Kali, `NtLmSsp`, NTLM, `10.10.10.5`).
-3. **Confirm collection.** The channel must be listed in the agent's `ossec.conf`. This lab forwards
-   Security, System, Application, `Microsoft-Windows-Sysmon/Operational` and
-   `Microsoft-Windows-PowerShell/Operational`.
+3. **Confirm collection, and know how weak this step is.** The channel must be listed in the agent's
+   `ossec.conf`. This lab forwards Security, System, Application,
+   `Microsoft-Windows-Sysmon/Operational` and `Microsoft-Windows-PowerShell/Operational`, and the
+   agent reports `connected`. That is a declaration plus a heartbeat, not a measurement of the event
+   itself. Wazuh indexes only what matched a rule, so an event that matched nothing cannot be found
+   in the index whether it arrived or not. Collection is therefore **inferred** everywhere in this
+   repository and was never independently verified, and no layer-3 conclusion drawn this way can rule
+   out a layer-2 cause. Measuring it needs `<logall_json>yes</logall_json>` on the manager and a query
+   against `wazuh-archives-*`. That has not been done here.
 4. **Query the SIEM for the event.** The indexer listens on 9200 on localhost only inside the SIEM VM,
    so a NAT port-forward to it fails with `curl` error 35. The path that works from the host is the
    dashboard console proxy already exposed on 8443:
@@ -74,9 +90,9 @@ inventory table.
    For Sysmon Events 3 and 22, read the event's own `UtcTime` — the channel wrote them 4.0 s and 3.2 s
    after they happened, which is enough to reverse cause and effect in a timeline.
 5. **Widen the window before declaring a gap.** On 2026-08-11 an apparent gap (4 × 4624 generated,
-   2 alerted) disappeared when the range was widened by twenty seconds: there were 8 × 4624 and all
-   eight alerted. Each remote invocation produces a *pair* of 4624 events and the pairs were being cut
-   in half by the window boundary. A false gap in a coverage report is as damaging as a false positive
+   2 alerted) disappeared when the range was widened by twenty seconds: the four remote invocations in
+   the window had produced 8 × 4624 and 4 × 4672, and every one of them alerted. Each invocation
+   produces a *pair* of 4624 events and the pairs were being cut in half by the window boundary. A false gap in a coverage report is as damaging as a false positive
    in a queue. Only gaps that survived a widened window were reported as real.
 6. **Check what already fires before writing anything.** Some events are already covered, badly:
    rule `67027` matches *every* Security 4688 at level 3, so 16 of 16 process creations alerted in the
@@ -104,34 +120,50 @@ Validation status vocabulary — used strictly:
 | `validated` | The rule was deployed, the source activity was re-run, and a query returned the alert. The entry records the date and the query. |
 | `tuning` | Deployed and firing, but its false-positive rate has not been measured yet, so its level is not trusted. |
 
-| File | What it detects | ATT&CK | Validation status |
-|---|---|---|---|
-| [`sigma/proc_creation_win_encoded_powershell.yml`](sigma/proc_creation_win_encoded_powershell.yml) | `powershell.exe` / `pwsh.exe` started with `-EncodedCommand` or its abbreviations, matched from Security 4688 or Sysmon Event ID 1, with an `OriginalFileName` branch so a renamed binary still matches | T1059.001, T1027 | `drafted` |
-| [`sigma/proc_creation_win_office_browser_spawning_shell.yml`](sigma/proc_creation_win_office_browser_spawning_shell.yml) | A document application or browser creating a shell or scripting interpreter as a child process | T1059.001, T1059.003, T1566.001 | `drafted` |
+`detections/sigma/` holds **12 files containing 21 rule documents**, seven of which are correlation
+rules. A file holds more than one document when a correlation needs its base events declared
+alongside it; the `Docs` column gives the count, and the base documents ship at level
+`informational` because they exist to be counted, not triaged.
 
-**Status, stated plainly:** no rule in this folder has been deployed to the lab manager, so nothing
-here is `validated` yet. Both rules were derived from measurements in this lab, and both describe the
-measurement in their own `description` block. The second one cannot be validated in this lab at all
-in its current form: Office is not installed on the endpoint and no browser has ever been observed
-spawning a child process in a measured window, which is recorded in its `falsepositives` section
-rather than hidden.
+| File | Docs | What it detects | ATT&CK | Validation status |
+|---|:--:|---|---|---|
+| [`sigma/proc_creation_win_encoded_powershell.yml`](sigma/proc_creation_win_encoded_powershell.yml) | 1 | `powershell.exe` / `pwsh.exe` started with `-EncodedCommand` or its abbreviations, matched from Security 4688 or Sysmon Event ID 1, with an `OriginalFileName` branch so a renamed binary still matches | T1059.001, T1027 | `drafted` |
+| [`sigma/proc_creation_win_office_browser_spawning_shell.yml`](sigma/proc_creation_win_office_browser_spawning_shell.yml) | 1 | A document application or browser creating a shell or scripting interpreter as a child process | T1059.001, T1059.003, T1566.001 | `drafted` |
+| [`sigma/proc_creation_win_lolbin_discovery_burst.yml`](sigma/proc_creation_win_lolbin_discovery_burst.yml) | 2 (1 correlation) | A single built-in discovery utility (`whoami`, `net user`, `nltest`, `systeminfo`, `ipconfig`, `arp`, `quser`, `tasklist`) as an informational base event, plus a `value_count` correlation on three or more distinct utilities under one `ParentProcessGuid` inside 60 s | T1033, T1087.001, T1016, T1082 | `drafted` |
+| [`sigma/win_security_susp_service_installation.yml`](sigma/win_security_susp_service_installation.yml) | 1 | Security 4697 where the service image sits outside `System32`/`SysWOW64`, the service name imitates a Windows service, or the service runs a script interpreter | T1543.003, T1036.004 | `drafted` |
+| [`sigma/win_security_password_spray_nonexistent_accounts.yml`](sigma/win_security_password_spray_nonexistent_accounts.yml) | 3 (2 correlations) | 4625 with `SubStatus 0xC0000064` as the base event, then a short-window spray correlation across distinct non-existent usernames from one source, and a 24 h variant for a slow attacker under any short window | T1110.001, T1110.003, T1087.001 | `drafted` |
+| [`sigma/win_security_targeted_password_guessing_valid_account.yml`](sigma/win_security_targeted_password_guessing_valid_account.yml) | 2 (1 correlation) | 4625 with `SubStatus 0xC000006A` as the base event, then repeated wrong passwords against one existing account from one source — the moment enumeration becomes targeted | T1110.001 | `drafted` |
+| [`sigma/win_security_anonymous_logon_smb_null_session.yml`](sigma/win_security_anonymous_logon_smb_null_session.yml) | 1 | 4624 `ANONYMOUS LOGON`, logon type 3, from a non-local address: the SMB null session that precedes share and account enumeration | T1135, T1087.001 | `drafted` |
+| [`sigma/win_security_rdp_bruteforce_behind_nla.yml`](sigma/win_security_rdp_bruteforce_behind_nla.yml) | 4 (2 correlations) | Failed type-3 logons and RDP listener activity as base events, a burst correlation over 4625 type 3 from one source, and a temporal correlation that reclassifies that burst as RDP when the listener channel corroborates it | T1110.001, T1021.001 | `drafted` |
+| [`sigma/win_security_successful_interactive_rdp_session.yml`](sigma/win_security_successful_interactive_rdp_session.yml) | 3 (1 correlation) | 4624 logon type 10 and TerminalServices-LocalSessionManager session events as base documents, correlated into "an interactive RDP session was actually established" rather than "someone authenticated" | T1021.001, T1078.003 | `drafted` |
+| [`sigma/net_connection_win_script_interpreter_external_dest.yml`](sigma/net_connection_win_script_interpreter_external_dest.yml) | 1 | Sysmon Event ID 3: a shell or scripting interpreter opening an outbound connection to an address outside the private, loopback, link-local and multicast ranges | T1071.001, T1059.001 | `drafted` |
+| [`sigma/dns_query_win_unexpected_process.yml`](sigma/dns_query_win_unexpected_process.yml) | 1 | Sysmon Event ID 22: a DNS query issued by a discovery binary or a simple desktop application, neither of which has a reason to resolve a name | T1071.004, T1036.003 | `drafted` |
+| [`sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml`](sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml) | 1 | Sysmon Event ID 11: an executable or script written to a user-writable folder, with the one false positive this lab measured three times (`__PSScriptPolicyTest_*.ps1`) excluded by writer path, prefix and extension together | T1105 | `drafted` |
+
+**Status, stated plainly:** all 21 documents pass `sigma check` with 0 errors, and they convert — 7
+files under the `opensearch_lucene` backend, the 4 files carrying `stats` correlations under `esql`,
+and the temporal RDP rule under `open_search_ppl` once field aliases are applied. **None of them has
+been deployed to the lab manager, so none is `validated` in the sense defined above, and the count of
+techniques detected by a rule of mine stays at 0.** Every rule derives its log source, fields and
+thresholds from a measurement recorded in its own `description` block. One of them cannot be validated
+in this lab at all in its current form: Office is not installed on the endpoint and no browser has
+ever been observed spawning a child process in a measured window, which is recorded in that rule's
+`falsepositives` section rather than hidden.
+
+Provenance and per-rule detail — naming convention, the multi-document file layout, conversion
+commands and the measurement behind each rule — are in
+[`sigma/README.md`](sigma/README.md).
 
 ### Backlog — measured gaps with no rule yet
 
-Each row is a hole that was demonstrated with a query, not a suspicion. None has a file yet, so none
-has a filename.
+Each row is a hole that was demonstrated with a query, not a suspicion. These three are what is left
+after the twelve files above; every other measured gap now has a drafted rule.
 
 | Gap (measured) | Evidence | Proposed detection | ATT&CK |
 |---|---|---|---|
-| Security 4697 (service installed) is generated and collected and matches no rule | 4697 present in the log 2026-08-08; 0 documents in `wazuh-alerts-*` | Match 4697 and alert when `ServiceFileName` points outside `System32`, or when `ServiceName` resembles but does not equal a real system service | T1543.003, T1036.004 |
-| Discovery commands are indistinguishable from background noise | `whoami.exe` produced the same level-3 alert as `sppsvc.exe` (rule 67027), 2026-08-11 | A **sequence** rule, not a single-event rule: three or more of `whoami`, `net user`, `net localgroup`, `nltest`, `systeminfo`, `ipconfig /all`, `arp -a`, `quser` under one `ParentProcessGuid` or `SubjectLogonId` inside 60 s | T1033, T1087, T1016 |
-| Security 4798/4799 (local group membership enumeration) produce no alert | 2 events generated, 0 alerts, confirmed against a widened window, 2026-08-11 | Several 4798/4799 under the same `SubjectLogonId` in a short window — the local enumeration signature | T1087 |
+| Security 4798/4799 (local group membership enumeration) produce no alert | 2 events generated, 0 alerts, confirmed against a widened window, 2026-08-11 | Several 4798/4799 under the same `SubjectLogonId` in a short window — the local enumeration signature. The drafted discovery-burst rule does not cover this: it reads process creation, and 4798/4799 are written without a process | T1087 |
 | Security 4648 (logon with explicit credentials) produces no alert | 1 event generated, 0 alerts, confirmed against a widened window, 2026-08-11 | Alert where `SubjectUserName` differs from `TargetUserName` and the calling process is not a known administrative tool | T1078.003 |
-| Password spraying cannot be separated from one user mistyping a password | Rule 60204 accumulates 60122 events but never reads `SubStatus`; 2026-09-07 saw 15 × `0xC0000064` then 3 × `0xC000006A` | Burst of 4625 with `SubStatus 0xC0000064` across three or more distinct `TargetUserName` values from one source IP; plus a 24 h variant grouped by source IP, because the 2 s SMB rate limiter lets a slow attacker under any short window | T1110.001 |
-| An RDP failure is indistinguishable from an SMB failure by logon type | With NLA active, 4 failed RDP logons appeared as 4625 **type 3**; only the completed graphical session produced type 10, 2026-09-07 | Correlate 4625 type 3 with TerminalServices-RemoteConnectionManager 1149 / 261 in the same window to reclassify the failure as RDP | T1021.001 |
-| Sysmon Event ID 3 (network connection) is ingested with zero detection coverage | 1 event / 0 alerts on 2026-08-11; 2 inbound `Initiated=false` events to `:3389` / 0 alerts on 2026-09-07 | Interpreter process (`powershell`, `cmd`, `wscript`, `mshta`) connecting outside the local subnet, read from the event's `UtcTime`; plus repeated inbound `Initiated=false` from one source | T1059.001 |
-| Sysmon Event ID 22 (DNS query) is ingested with zero detection coverage | 1 event / 0 alerts, 2026-08-11 | Query name on an intel or newly-registered-domain list, or repeated NXDOMAIN from one `ProcessGuid`; correlate by `ProcessGuid`, never by PID | Not mapped yet |
-| Security 1102 (audit log cleared) has never been generated, so its detection path is untested | The only one of the author's twelve priority Event IDs with no measured data | Alert on 1102 unconditionally at high severity. The task is first a **lab** task: trigger it deliberately and confirm the path end to end. The `base-limpia` snapshot exists for the rollback | T1070.001 |
+| Security 1102 (audit log cleared) has never been generated, so its detection path is untested | No 1102 has ever been produced in this lab and no query has been run against it — the gap is the absence of the exercise, not the absence of a query result | Alert on 1102 unconditionally at high severity. The task is first a **lab** task: trigger it deliberately and confirm the path end to end. The `base-limpia` snapshot exists for the rollback | T1685.005 (numbered T1070.001 before the v18 regrouping) |
 
 ---
 
@@ -141,9 +173,9 @@ Recorded here rather than converted into a rule that would not work.
 
 | Gap | Layer | Why a rule does not fix it |
 |---|---|---|
-| Port scans are invisible | Collection | A 65,535-port SYN scan lasting 88 s produced **0** attributable alerts; a 7-port `-sS -sV` scan left 2 Sysmon Event ID 3 events and 0 Security 5156, because the Filtering Platform Connection subcategory is deliberately not audited (very high volume). A Wazuh agent reads Windows event logs and Windows does not record a SYN to a closed port anywhere. The options are to enable 5156/5157 auditing and accept the volume, or to put a network sensor on the segment. The honest answer is the second. |
+| Port scans are invisible | Collection | A 65,535-port SYN scan lasting 88 s produced **0** attributable alerts; a 7-port `-sS -sV` scan left 2 Sysmon Event ID 3 events and 0 Security 5156. With the audit subcategories enabled on this endpoint, nothing recorded the scan. The subcategory that would is *Audit Filtering Platform Packet Drop* (5152/5153), which is off here and was never measured; *Audit Filtering Platform Connection* (5156/5157) is also off, and even enabled it would only have recorded the 8 permitted connections, not the 65,527 filtered ones. So the host-side option is 5152/5153 and its volume, and the alternative is a network sensor on the segment. The answer here is the sensor. |
 | No time synchronisation | Collection | A consistent ~1.8 s offset between the endpoint clock and the manager clock, plus a 3–4 s channel-write lag inside Sysmon 3 and 22. Fixed by configuring NTP on both VMs and pinning queries to `data.win.system.systemTime`, not by a rule. It becomes materially more important once a domain controller joins the lab, since Kerberos rejects a skew above 5 minutes. |
-| Rule 92213 fires at level 15 on benign PowerShell behaviour | Tuning debt | Not a missing rule — an existing rule that needs an exclusion for `__PSScriptPolicyTest_*.ps1` written by the signed system `powershell.exe`. Until that is done, level 15 carries no information in this lab, and sorting the queue by severity is actively harmful. |
+| Rule 92213 fires at level 15 on benign PowerShell behaviour | Tuning debt | Not a missing rule — an existing rule that needs an exclusion for `__PSScriptPolicyTest_*.ps1` written by the signed system `powershell.exe`. The replacement is drafted (`file_event_win_executable_dropped_excluding_psscriptpolicytest.yml`) and, like everything else here, not deployed: the stock rule is still what fires on this endpoint. Until that changes, level 15 carries no information in this lab, and sorting the queue by severity is actively harmful. |
 
 ---
 
@@ -178,7 +210,7 @@ Steps:
 Shape of a custom rule for the 4697 gap, as a draft and not as a tested artefact:
 
 ```xml
-<group name="windows,sysmon,local,">
+<group name="windows,windows_security,local,">
   <rule id="100001" level="8">
     <if_sid>60009</if_sid>
     <field name="win.system.eventID">^4697$</field>
@@ -188,7 +220,10 @@ Shape of a custom rule for the 4697 gap, as a draft and not as a tested artefact
 </group>
 ```
 
-The `if_sid` parent, the exact level and the field spelling are precisely what step 2 exists to check.
+The group name is `windows_security`, not `sysmon`: 4697 comes from the Security channel, and a rule
+filed under the wrong group is mis-sorted by every dashboard pivot that reads `rule.groups`. The
+`if_sid` parent, the exact level, the group list and the field spelling are precisely what step 2
+exists to check.
 Publishing the draft before testing it would be the same mistake as publishing a coverage matrix
 built from a framework list instead of from queries.
 
@@ -202,9 +237,10 @@ level 6 (rule 92652, anonymous SMB session), while the only level 15 was noise 1
 
 | File | What it holds |
 |---|---|
+| [`sigma/README.md`](sigma/README.md) | The ruleset itself: naming convention, why several documents share a file, the `sigma convert` commands and their backend limits, and the lab measurement behind each rule |
 | [`coverage-matrix.md`](coverage-matrix.md) | Every ATT&CK technique with measured evidence in this lab, scored across the three layers, with the honest coverage number |
 | [`attack-navigator-layer.json`](attack-navigator-layer.json) | The same data as an ATT&CK Navigator layer (layer format 4.5, ATT&CK v18) |
 | [`../investigations/001-first-alert-triage.md`](../investigations/001-first-alert-triage.md) | The 2026-08-08 end-to-end verification: 82 alerts, the level-15 false positive, the invisible 4697 gap |
-| [`../investigations/002-process-telemetry-correlation.md`](../investigations/002-process-telemetry-correlation.md) | The 2026-08-11 visibility exercise: 4688 vs Sysmon 1 vs Wazuh, 167 events to 27 alerts |
+| [`../investigations/002-process-telemetry-correlation.md`](../investigations/002-process-telemetry-correlation.md) | The 2026-08-11 visibility exercise: 4688 vs Sysmon 1 vs Wazuh, 172 events to 36 alerts |
 | [`../investigations/003-smb-rdp-attack-chain.md`](../investigations/003-smb-rdp-attack-chain.md) | The 2026-09-07 controlled SMB/RDP chain: `SubStatus` codes, NLA and logon types, the SMB rate limiter |
 | [`../docs/01-lab-architecture.md`](../docs/01-lab-architecture.md) | The lab the measurements were taken on |

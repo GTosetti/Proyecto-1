@@ -6,7 +6,7 @@
     "layer": "4.5"
   },
   "domain": "enterprise-attack",
-  "description": "Measured ATT&CK coverage of a self-built three-VM home SOC lab (Windows 11 endpoint with Sysmon and advanced audit policy, Wazuh 4.14.7 all-in-one, Kali attacker). Scores come from queries against the alert index, not from mapping tables: 0 = nothing exercised and no mapped telemetry, 1 = telemetry exists on the endpoint but only partially or as an adjacent mechanism, 2 = telemetry generated AND confirmed collected but no rule matched (a measured detection gap), 3 = a rule fired on it in this lab. Only techniques with measured evidence appear. Note that TA0005 is named Stealth in ATT&CK v18. Full matrix and caveats: detections/coverage-matrix.md.",
+  "description": "Measured ATT&CK coverage of a self-built three-VM home SOC lab (Windows 11 endpoint with Sysmon and advanced audit policy, Wazuh 4.14.7 all-in-one, Kali attacker). Scores come from queries against the alert index, not from mapping tables: 0 = nothing exercised and no mapped telemetry; 1 = the mapped telemetry exists only partially or only as an adjacent mechanism, and detection is untested; 2 = telemetry generated and collected, and nothing actionable matched it - either no rule at all, or only a catch-all that treats the activity like background noise (a measured detection gap); 3 = a rule fired on this technique's own activity in this lab. Collection for score-2 entries is inferred from the agent configuration, not observed, because the manager indexes only what matched a rule. Only techniques with measured evidence appear. Note that TA0005 is named Stealth in ATT&CK v18. Full matrix and caveats: detections/coverage-matrix.md.",
   "sorting": 0,
   "layout": {
     "layout": "side",
@@ -14,7 +14,8 @@
     "showID": true,
     "showName": true,
     "showAggregateScores": false,
-    "countUnscored": false
+    "countUnscored": false,
+    "expandedSubtechniques": "annotated"
   },
   "hideDisabled": false,
   "techniques": [
@@ -52,7 +53,7 @@
       "techniqueID": "T1548.002",
       "score": 1,
       "enabled": true,
-      "comment": "Never simulated; studied 2026-07-31 (4 mitigations, of which M1026 removing local admin eliminates it). The UAC linked-token mechanism it abuses was measured directly: 8 of 8 remote invocations produced a 4624 pair - elevatedToken %%1842 with a 4672, %%1843 without - and launched processes carried TokenElevationType %%1938 (Limited). No bypass path exercised and no rule."
+      "comment": "Never simulated; studied 2026-07-31 (4 mitigations, of which M1026 removing local admin eliminates it). The UAC linked-token mechanism it abuses was measured directly: 4 of 4 remote invocations produced a 4624 pair - 8 x 4624 and 4 x 4672 in all, elevatedToken %%1842 with a 4672 and %%1843 without - and launched processes carried TokenElevationType %%1938 (Limited). No bypass path exercised and no rule."
     },
     {
       "techniqueID": "T1110",
@@ -64,7 +65,7 @@
       "techniqueID": "T1110.001",
       "score": 3,
       "enabled": true,
-      "comment": "2026-09-07: 18 attempts from 10.10.10.5 - 15 x 4625 with SubStatus 0xC0000064 (non-existent accounts), then 3 x 0xC000006A (real account, wrong password), then a successful 4624. Alerts fired, but rule 60204 does not read SubStatus, so enumeration and targeted guessing are indistinguishable to it. Failures were spaced about 2 s apart by EnableAuthRateLimiter (2000 ms), which is the mitigation's fingerprint, not the attacker's."
+      "comment": "2026-09-07: 18 attempts from 10.10.10.5 - 15 x 4625 with SubStatus 0xC0000064 (non-existent accounts), then 3 x 0xC000006A (real account, wrong password). The guessing never succeeded; the successful 4624 that follows came from a known-valid credential supplied deliberately, to generate post-authentication telemetry. Alerts fired, but rule 60204 does not read SubStatus, so enumeration and targeted guessing are indistinguishable to it. Failures were spaced about 2 s apart by EnableAuthRateLimiter (2000 ms), which is the mitigation's fingerprint, not the attacker's."
     },
     {
       "techniqueID": "T1016",
@@ -82,7 +83,7 @@
       "techniqueID": "T1046",
       "score": 1,
       "enabled": true,
-      "comment": "2026-08-08: nmap -sS -p- covered 65,535 ports in 88 s (8 open, 65,527 filtered) and produced 0 attributable alerts. 2026-09-07: an -sn sweep plus -sS -sV against 7 ports left 2 Sysmon EID 3 events and 0 Security 5156, because the Filtering Platform Connection subcategory is deliberately not audited. Structural collection gap: a host agent reads Windows event logs and Windows does not log a SYN to a closed port. Needs a network sensor, not a rule."
+      "comment": "2026-08-08: nmap -sS -p- covered 65,535 ports in 88 s (8 open, 65,527 filtered) and produced 0 attributable alerts. 2026-09-07: an -sn sweep plus -sS -sV against 7 ports left 2 Sysmon EID 3 events and 0 Security 5156, because the Filtering Platform Connection subcategory is deliberately not audited - and enabled it would only have recorded the 8 permitted connections. The subcategory that records a dropped packet is Audit Filtering Platform Packet Drop (5152/5153); it is off in this lab and was never measured. Structural collection gap with the subcategories this endpoint enables: needs a network sensor, not a rule."
     },
     {
       "techniqueID": "T1087",
@@ -94,7 +95,7 @@
       "techniqueID": "T1135",
       "score": 3,
       "enabled": true,
-      "comment": "2026-09-07: the SMB null session preceding share enumeration produced Security 4624 ANONYMOUS LOGON, type 3, NTLM, from 10.10.10.5, flagged by rule 92652 at level 6 - the only reliable trace of the whole reconnaissance phase, and a level 6 in an exercise whose twelve level-15 alerts were all noise. The authenticated --shares listing of ADMIN$/C$/IPC$ left no distinct event."
+      "comment": "2026-09-07: the SMB null session preceding share enumeration produced Security 4624 ANONYMOUS LOGON, type 3, NTLM, from 10.10.10.5, flagged by rule 92652 at level 6 - the only reliable trace of the whole reconnaissance phase, and a level 6 in an exercise whose twelve level-15 alerts were all noise. The alert fired on the logon that carried the enumeration, not on the enumeration: the authenticated --shares listing of ADMIN$/C$/IPC$ left no distinct event, because Audit Object Access -> File Share (5140/5145) is deliberately off in this lab."
     },
     {
       "techniqueID": "T1021.001",
@@ -106,7 +107,7 @@
       "techniqueID": "T1078.003",
       "score": 3,
       "enabled": true,
-      "comment": "2026-09-07: a guessed local credential was accepted over SMB (4624 type 3, NTLM, rule 92657) and later over RDP (4624 type 10). The account is a local administrator, so access to ADMIN$ and C$ implies full control of the endpoint. Nothing in the alert itself separates this from a legitimate administrator logon."
+      "comment": "2026-09-07: the guessing phase failed, so a known-valid local credential was supplied deliberately to generate the post-authentication telemetry. It was accepted over SMB (4624 type 3, NTLM, rule 92657) and later over RDP (4624 type 10). The account is a local administrator, so access to ADMIN$ and C$ implies full control of the endpoint. Nothing in the alert itself separates this from a legitimate administrator logon."
     },
     {
       "techniqueID": "T1659",
@@ -116,9 +117,9 @@
     },
     {
       "techniqueID": "T1105",
-      "score": 3,
+      "score": 1,
       "enabled": true,
-      "comment": "Rule 92213 ('Executable file dropped in folder commonly used by malware', level 15) carries this mapping and fired 18 times - 1 on 2026-08-08, 5 on 2026-08-11, 12 on 2026-09-07 - and every one was a false positive on __PSScriptPolicyTest_*.ps1 written by the signed system powershell.exe. No real tool transfer was ever staged, so the true-positive path is unvalidated and the rule is tuning debt."
+      "comment": "Rule 92213 ('Executable file dropped in folder commonly used by malware', level 15) carries this mapping and fired 18 times - 1 on 2026-08-08, 5 on 2026-08-11, 12 on 2026-09-07 - and every one was a false positive on __PSScriptPolicyTest_*.ps1 written by the signed system powershell.exe. No tool transfer was ever staged, so what exists is the adjacent file-create mechanism, not the technique. Scored 1 rather than 3: a rule that has only ever fired on something else has not detected this. Tuning debt; the replacement rule is drafted and not deployed."
     },
     {
       "techniqueID": "T1531",
@@ -139,10 +140,10 @@
       "comment": "Not simulated, but its mapped telemetry was measured on 2026-08-08: Security 4697 was confirmed in the endpoint log with Get-WinEvent, the Security channel is forwarded by the agent, and a wazuh-alerts-* query returned 0 documents containing 4697. ATT&CK lists zero mitigations for this technique, which makes it a detection problem by definition."
     },
     {
-      "techniqueID": "T1070.001",
+      "techniqueID": "T1685.005",
       "score": 0,
       "enabled": true,
-      "comment": "Security Event ID 1102 has never been generated in this lab - the only one of the twelve priority Event IDs with no measured data, so its detection path is untested. Planned exercise; the base-limpia snapshot exists for the rollback."
+      "comment": "Numbered T1070.001 before the ATT&CK v18 regrouping under T1685; the old ID no longer places on a v18 matrix. Security Event ID 1102 has never been generated in this lab and no query has ever been run against it, so its detection path is untested - the gap is the missing exercise, not an empty query result. Planned; the base-limpia snapshot exists for the rollback."
     },
     {
       "techniqueID": "T1484",
@@ -169,19 +170,19 @@
   },
   "legendItems": [
     {
-      "label": "0 - Not covered: never exercised, no mapped telemetry in the lab",
+      "label": "0 - Not covered: never exercised, and no mapped telemetry exists in this lab",
       "color": "#efefef"
     },
     {
-      "label": "1 - Telemetry generated only: partial or adjacent events on the endpoint, detection untested",
+      "label": "1 - Telemetry only partial or adjacent, detection untested - includes techniques whose mapped rule has only ever fired on something else",
       "color": "#a6cee3"
     },
     {
-      "label": "2 - Collected but no rule matched: a detection gap measured with a query",
+      "label": "2 - Generated and collected, nothing actionable matched: either no rule fired, or only a level-3 catch-all that treats the activity as background noise",
       "color": "#2b7bba"
     },
     {
-      "label": "3 - A rule fired on it in this lab (see comment for the rule ID and date)",
+      "label": "3 - A rule fired on this technique's own activity in this lab (see comment for the rule ID and date)",
       "color": "#0b3d66"
     }
   ],
@@ -204,15 +205,15 @@
     },
     {
       "name": "Honest coverage",
-      "value": "13 of 23 techniques (57%) had a rule fire. One of those 13 (T1105) only ever fired on false positives - 18 firings, 18 false positives. Only 3 firings came from a rule reading a pattern rather than a single event. Rules written by the author and deployed: 0."
+      "value": "12 of 23 techniques (52%) had a rule fire on their own activity. T1105 is excluded from that count and scored 1: its mapped rule fired 18 times and all 18 were false positives on an adjacent PowerShell temp file. Only 3 firings came from a rule reading a pattern rather than a single event. Rules written by the author: 21 Sigma documents across 12 files, all drafted, none deployed to the manager - so techniques detected by a rule of the author's own: 0."
     },
     {
       "name": "Largest uncovered tactic",
-      "value": "Stealth (TA0005, called Defense Evasion before ATT&CK v18): 4 of 5 techniques uncovered, 5 of 6 if T1548.002 is counted here as well as under Privilege Escalation. Discovery is level with it at 4 of 5 and is the more actionable gap, because all five of its techniques were executed and their telemetry reached the SIEM."
+      "value": "Stealth (TA0005, called Defense Evasion before ATT&CK v18): 4 of 5 techniques uncovered, 5 of 6 if T1548.002 is counted here as well as under Privilege Escalation. Discovery is level with it at 4 of 5, and three of those four gaps (T1016, T1033, T1087) are rule gaps: the activity ran, the telemetry was generated and forwarded, and only a catch-all matched. The fourth, T1046, is an architecture gap that needs a network sensor, not a rule."
     },
     {
       "name": "Caveat",
-      "value": "A coverage claim built by searching an alert index is bounded by the ruleset, not by what the endpoint produced: on 2026-08-08 about 2,100 events reported to the manager left 835 alerts indexed; on 2026-08-11, 167 events generated produced 27 alerts."
+      "value": "A coverage claim built by searching an alert index is bounded by the ruleset, not by what the endpoint produced: on 2026-08-08 about 2,100 events reported to the manager left 835 alerts indexed; on 2026-08-11, 172 events generated produced 36 alerts (a first, window-clipped pass reported 167 and 27)."
     }
   ],
   "showTacticRowBackground": true,

@@ -49,18 +49,24 @@ falsepositives:
   - Every legitimate remote desktop login. On its own this is an inventory event, not a detection.
 level: informational
 ---
-title: Terminal Services Session Logon Or Reconnection
+title: Terminal Services Session Logon Or Shell Start
 id: 585b0663-197b-4d27-ba17-72556133d2ba
 name: win_terminalservices_lsm_session_logon
 status: experimental
 description: |
   Base event: the Terminal Services Local Session Manager recorded a session logon
-  (Event ID 21) or a session reconnection (Event ID 22), both of which carry the source
-  network address of the client.
+  (Event ID 21) or a shell start (Event ID 22), both of which carry the source network
+  address of the client.
+  The event IDs in this channel are 21 logon, 22 shell start notification received, 23
+  logoff, 24 disconnect and 25 reconnection. 22 is not a reconnection: it follows a fresh
+  21 when the desktop shell comes up, which is exactly what the lab sequence below shows.
+  Reconnection to an existing session is 25, and it is deliberately not selected here
+  because this lab has never produced one.
   Measured in the home lab on 2026-09-07: the graphical RDP session that established at
-  18:35:09 produced the sequence 41 -> 42 -> 21 -> 22 -> 24 in this channel, alongside
-  Event ID 1149 in the RemoteConnectionManager channel carrying Source Network Address
-  10.10.10.5.
+  18:35:09 produced 41 -> 42 -> 21 -> 22 in this channel, then a 24 when the session was
+  disconnected at 18:36:49; alongside Event ID 1149 in the RemoteConnectionManager channel
+  carrying Source Network Address 10.10.10.5. The 22 arrived immediately after the 21 on a
+  brand-new session, which is the measurement that settles what 22 means.
   Correlating with this channel matters because it is what survives when the Security log is
   cleared: it is a different channel with a different retention, and an attacker who clears
   Security (Event ID 1102) does not necessarily clear this one.
@@ -68,8 +74,8 @@ references:
   - https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/remote-desktop-services-events
   - https://attack.mitre.org/techniques/T1021/001/
   - >-
-    Lab measurement 2026-09-07: TerminalServices-LocalSessionManager sequence 41 -> 42 -> 21 -> 22 -> 24 at
-    the 18:35:09 session
+    Lab measurement 2026-09-07: TerminalServices-LocalSessionManager 41 -> 42 -> 21 -> 22 at the 18:35:09
+    session, then 24 at the 18:36:49 disconnect
 author: Proyecto-1 home SOC lab
 date: 2026-09-15
 modified: 2026-09-15
@@ -84,11 +90,11 @@ logsource:
     It is not one of the five channels the lab agent forwards by default, so it must be added to ossec.conf
     before this rule can fire.
 detection:
-  session_logon_or_reconnect:
+  session_logon_or_shell_start:
     EventID:
       - 21
       - 22
-  condition: session_logon_or_reconnect
+  condition: session_logon_or_shell_start
 fields:
   - User
   - SessionID
@@ -102,8 +108,8 @@ id: 1d202b6e-f001-41aa-a515-cfb5171669f0
 status: experimental
 description: |
   A successful RemoteInteractive logon (Security 4624, LogonType 10) confirmed by a Terminal
-  Services session logon or reconnection (Event ID 21 or 22) from the same source address.
-  Two channels agreeing that a human-usable desktop session was created on this host.
+  Services session logon (Event ID 21) or shell start (Event ID 22) from the same source
+  address. Two channels agreeing that a human-usable desktop session was created on this host.
   Why the correlation rather than the 4624 alone: the same 2026-09-07 exercise showed that
   RDP activity is spread across three channels that each tell a partial story - the Security
   log says a type 10 logon happened but not that it was RDP, RemoteConnectionManager 1149
@@ -111,8 +117,11 @@ description: |
   session, and LocalSessionManager 21/22 is the one that marks a real session with its
   source address. Requiring 4624 type 10 and LSM 21/22 together is what distinguishes
   "someone has a desktop on this machine" from "someone tested a credential".
-  On the lab endpoint this fired exactly once, on the session established at 18:35:09 from
-  10.10.10.5, and did not fire on the two auth-only authentications two minutes earlier.
+  Reconstructed by hand from the raw channels: the 18:35:09 session produced both halves of
+  this correlation, and the two auth-only authentications at 18:33:30-18:33:31 produced only
+  the 4624 type 3 and the 1149, so the rule would not have matched them. The correlation has
+  not been executed - the LocalSessionManager channel is not yet forwarded, so nothing has
+  ever run this rule against lab data.
   Grouping note: the two channels name the client address differently (Security 4624 uses
   IpAddress, LocalSessionManager uses Address), so the correlation declares an alias. Verify
   the alias against the field names your parser actually produces - Wazuh exposes them under
@@ -120,9 +129,17 @@ description: |
   Backend caveat, measured on 2026-09-15 with sigma-cli 3.1.0: the ES|QL backend rejects the
   alias with "Correlation field normalization is not supported by backend", and the
   opensearch_lucene and lucene backends do not support correlation at all. Replacing the
-  aliases block with "group-by: [Computer]" converts cleanly on ES|QL - verified on a copy -
+  aliases block with "group-by: [host.name]" converts cleanly on ES|QL - verified on a copy -
   at the cost of grouping by host instead of by client address, which means the analyst has
-  to compare the two addresses by hand during triage.
+  to compare the two addresses by hand during triage. Group on host.name and not on Computer:
+  Computer is a System-block field with no mapping in ecs_windows, so it converts to
+  winlog.event_data.Computer, a column that does not exist in a Winlogbeat-shaped index. A
+  group-by key that is always null pools every host into one bucket, which is worse than no
+  grouping at all.
+  Window caveat: timespan renders as date_trunc, a fixed calendar bucket, not a sliding
+  window. "Within 5 minutes" therefore means "inside the same 5-minute wall-clock bucket",
+  and a pair split across a bucket boundary does not correlate. Wazuh's native timeframe is
+  a sliding window, so the SIEM implementation is the stricter reading of the intent.
 references:
   - https://attack.mitre.org/techniques/T1021/001/
   - https://attack.mitre.org/techniques/T1078/003/
@@ -156,10 +173,11 @@ falsepositives:
     where RDP is not a normal access path, or scoped with an allowlist of source addresses and accounts.
     Deployed unscoped on a jump host it produces one alert per login and nothing else.
   - >-
-    Remote support tools that reconnect to an existing session generate Event ID 22 on their own; a
-    reconnection is not a new logon and will not always be accompanied by a fresh 4624, in which case the
-    correlation does not fire. That is a miss, not a false positive, and is the trade-off of requiring both
-    channels.
+    Reconnection to an existing session is Event ID 25, not 22, and it is not selected here. A reconnection
+    is not a new logon and does not always produce a fresh 4624 type 10, so this correlation stays silent on
+    it. That is a miss, not a false positive, and it is the trade-off of requiring both channels. Adding 25
+    to the base document would close it, at the cost of a selection this lab has never generated and
+    therefore cannot characterise.
   - >-
     Not a false positive source in this lab, and worth recording because it was measured: the VirtualBox guest
     automation used to drive the endpoint produces 4624 events with LogonType 2 and LogonProcessName Advapi,

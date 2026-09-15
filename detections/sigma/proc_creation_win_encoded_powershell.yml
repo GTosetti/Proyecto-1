@@ -3,8 +3,10 @@ id: 7f3a1c2e-4b8d-4e6a-9c1f-2d5b8a3e7c40
 status: experimental
 description: |
     Detects powershell.exe or pwsh.exe started with the -EncodedCommand switch or any of its
-    accepted abbreviations (-e, -ec, -en, -enc), which hides the executed script from anyone
-    reading only the command line.
+    accepted abbreviations, which hides the executed script from anyone reading only the command
+    line. PowerShell accepts any unambiguous prefix of the switch name, so all fifteen forms from
+    -e to -encodedcommand are covered; the pattern list is shaped around the prefix collision
+    with -Encoding, which is explained in the false positives below.
     Lab measurement that motivated the rule (2026-08-08, WIN11-VICTIMA, Windows 11 Pro build
     10.0.26200): an encoded PowerShell command was executed and Wazuh raised rule 92057 at
     level 12 on a Sysmon Event ID 1 - NOT on the PowerShell 4104 ScriptBlockLogging event the
@@ -23,8 +25,9 @@ references:
     - https://attack.mitre.org/techniques/T1027/
     - https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe
     - >-
-      Internal lab measurement, 2026-08-08 end-to-end verification (82 alerts in a 9 s window; encoded command
-      surfaced through Wazuh rule 92057 level 12 on Sysmon EID 1)
+      Internal lab measurement, 2026-08-08 end-to-end verification (82 alerts across the whole exercise -
+      three phases, 00:44:48Z-00:49:14Z - of which the 8-second generator script accounted for the level 12
+      and level 15 alerts; encoded command surfaced through Wazuh rule 92057 level 12 on Sysmon EID 1)
 author: Proyecto-1 home SOC lab
 date: 2026-09-15
 tags:
@@ -48,7 +51,10 @@ detection:
             - ' -e '
             - ' -ec '
             - ' -en '
-            - ' -enc'
+            - ' -enc '
+            - ' -enco '
+            - ' -encod '
+            - ' -encode'
     condition: selection_image and selection_encoded
 falsepositives:
     - Software installers, MDM/RMM agents and scheduled tasks that wrap PowerShell payloads in
@@ -59,7 +65,17 @@ falsepositives:
       produces two matches unless the backend deduplicates. Measured in the same lab, for one
       process, 4688 reported NewProcessId 0x1250 (hexadecimal) while Sysmon 1 reported
       ProcessId 4688 (decimal) - the fields share a name but not a meaning or a base.
-    - Short switches are matched with surrounding spaces to avoid colliding with -ExecutionPolicy;
-      an operator who writes -Enc without a preceding space (for example immediately after a
-      quote) will still match, which is intended.
+    - Every pattern begins with a literal space, so the rule requires the switch to be preceded by
+      whitespace. That is a declared evasion gap, not a defence - powershell.exe"-enc <base64>", a
+      tab separator, or a semicolon immediately before the switch will not match. It is written
+      this way on purpose - ' -e' without the leading space is a substring of too many benign
+      paths and switches to be usable at level high - but the gap is real and an operator should
+      know it is there. The windash modifier expands the dash character only (-, /, en dash, em
+      dash, horizontal bar); it does not relax the leading space.
+    - -EncodedCommand accepts any unambiguous prefix, so all fifteen forms from -e to
+      -encodedcommand have to be covered. The six short forms carry a trailing space and only
+      ' -encode' is left open-ended, which is what keeps the rule off ' -Encoding' - a parameter
+      of Out-File, Set-Content and Export-Csv, and a prefix collision with -enc, -enco and -encod.
+      An earlier version of this rule ended at ' -enc' with no trailing space and matched any
+      inline powershell.exe -Command "... -Encoding UTF8" at level high.
 level: high

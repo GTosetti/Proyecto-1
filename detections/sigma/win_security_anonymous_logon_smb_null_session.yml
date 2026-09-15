@@ -13,10 +13,21 @@ description: |
   Why this rule is worth having even though a stock rule already covers it: in the same
   exercise, the reconnaissance phase left almost nothing else behind. An nmap -sn sweep and
   an nmap -sS -sV scan of 7 ports produced 2 Sysmon Event ID 3 records and 0 Security 5156
-  records (the Filtering Platform Connection subcategory is not audited, deliberately, as it
-  is very high volume). The anonymous logon was the only reliable host-side trace of the
-  whole phase - and it was scored level 6, while twelve level 15 alerts in the same exercise
-  were all false positives. Rule level is an opinion held by whoever wrote the rule.
+  records (Audit Filtering Platform Connection is deliberately not audited here, as it is
+  very high volume - and 5156 is 'connection permitted', so even enabled it would have
+  recorded only the connections that succeeded; the subcategory that records a dropped
+  inbound packet is Audit Filtering Platform Packet Drop, 5152/5153, which is off in this lab
+  and has never been measured here). The anonymous logon was the only reliable host-side
+  trace of the whole phase - and it was scored level 6, while twelve level 15 alerts in the
+  same exercise were all false positives. Rule level is an opinion held by whoever wrote the
+  rule.
+  Portability note on the filters, measured on 2026-09-15 with sigma-cli 3.1.0: Windows
+  writes the literal '-' in IpAddress when there is no source address, but ECS maps
+  IpAddress to source.ip, which is an ip-typed field. Comparing a typed ip field to '-' is a
+  parse error, not a non-match, and the backend returns an error instead of zero results.
+  The '-' case is therefore isolated in its own filter block: on a typed index, replace
+  filter_no_source_address with a check for the field being missing or unparseable, and
+  leave the rest of the rule alone.
 references:
   - >-
     https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4624
@@ -43,12 +54,13 @@ detection:
     EventID: 4624
     TargetUserName: 'ANONYMOUS LOGON'
     LogonType: 3
-  filter_local_address:
+  filter_loopback_address:
     IpAddress:
-      - '-'
       - '127.0.0.1'
       - '::1'
-  condition: anonymous_network_logon and not filter_local_address
+  filter_no_source_address:
+    IpAddress: '-'
+  condition: anonymous_network_logon and not 1 of filter_*
 fields:
   - IpAddress
   - IpPort
@@ -67,8 +79,8 @@ falsepositives:
     domain-joined, so this class of false positive could not be measured here and must be assessed before
     deploying the rule on a member server.
   - >-
-    The local-address filter exists because Windows itself records anonymous logons with IpAddress "-" or
-    "::1" during normal operation. Those are excluded rather than alerted on.
+    The two address filters exist because Windows itself records anonymous logons with IpAddress "-" or "::1"
+    during normal operation. Those are excluded rather than alerted on.
   - >-
     Measured on this endpoint: exactly one event matched during the 2026-09-07 exercise, and it was the
     attacker. No benign anonymous logon from a remote address was recorded in any measured window.

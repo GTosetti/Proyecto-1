@@ -19,10 +19,23 @@ description: |
     PowerShell itself, the extension is always .ps1, and the file is created and removed in the
     course of an execution-policy check. Nothing is executed from it by an attacker.
     Why it is excluded this narrowly rather than by suppressing the whole rule: the exclusion
-    requires all three of the writer's full system path, the __PSScriptPolicyTest_ prefix and the
-    .ps1 extension. A file dropped in the same folder by any other process, or any other file
-    dropped by PowerShell, still alerts. Writing to System32 requires administrative rights, so an
-    attacker cannot cheaply place a binary at the excluded path to inherit the exclusion.
+    requires all three of the writer being the signed system PowerShell, the path being under
+    \AppData\Local\Temp\, and the filename matching the exact shape PowerShell generates -
+    __PSScriptPolicyTest_ followed by eight random characters, a dot, three random characters and
+    .ps1. The shape is taken from a real measured filename, __PSScriptPolicyTest_wusoeqlb.xlh.ps1.
+    A file dropped in the same folder by any other process, or any other file dropped by
+    PowerShell, still alerts.
+    Residual risk, stated plainly: the Image clause constrains the process that WRITES the file,
+    and that process is the stock signed powershell.exe that every unprivileged user can already
+    run. An attacker who writes a payload from powershell.exe to a path matching that regex
+    inherits the exclusion - no administrative rights and no write to System32 are needed. The
+    regex narrows the target from "any filename beginning with __PSScriptPolicyTest_" to "a
+    filename of exactly the generated shape", which costs an attacker nothing but a naming
+    convention. This exclusion is a noise reduction, not a security boundary, and it should not be
+    described as one. Closing it properly needs a companion rule on category: process_creation
+    that alerts on any command line referencing a __PSScriptPolicyTest_ path, because the genuine
+    file is written for an execution-policy check and is never executed. That companion rule is
+    not written yet.
     The level is deliberately medium, not high. Dropping a file into %TEMP% is a precondition of
     an intrusion, not proof of one, and this lab is the evidence for what happens when that
     distinction is ignored: a maximum-severity rule that fired 18 times on benign activity and 0
@@ -66,8 +79,8 @@ detection:
         Image:
             - 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
             - 'C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
-        TargetFilename|contains: '\AppData\Local\Temp\__PSScriptPolicyTest_'
-        TargetFilename|endswith: '.ps1'
+        TargetFilename|contains: '\AppData\Local\Temp\'
+        TargetFilename|re: '\\__PSScriptPolicyTest_[a-z0-9]{8}\.[a-z0-9]{3}\.ps1$'
     condition: selection_path and selection_extension and not filter_main_psscriptpolicytest
 falsepositives:
     - Software installers and updaters, which routinely stage executables in %TEMP% before
@@ -77,6 +90,12 @@ falsepositives:
     - PowerShell 7 (pwsh.exe) writes its own __PSScriptPolicyTest_ files from a different image
       path. It is not installed in this lab, so its path was not measured and is deliberately not
       excluded - adding it should follow a measurement, not an assumption.
+    - The exclusion regex is pinned to one measured filename shape (eight characters, dot, three
+      characters, .ps1). If a future PowerShell build changes that shape, the exclusion stops
+      matching and the level-15 noise this rule exists to remove comes back. That is the intended
+      failure direction - a tuning rule that silently stops excluding is recoverable, one that
+      silently starts excluding more is not - but it means the regex has to be re-checked against
+      a real filename after a PowerShell update, not assumed.
     - Sysmon Event ID 11 depends on the file-create rules of the loaded configuration. This
       endpoint runs the SwiftOnSecurity configuration; a different configuration changes what
       this rule can see, and absence of a match is not evidence that nothing was written.

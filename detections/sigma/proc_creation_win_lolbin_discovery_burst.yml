@@ -120,4 +120,12 @@ falsepositives:
       applied to failed logons in this lab, where the built-in SMB rate limiter spaced
       authentication failures about 2 seconds apart, which short-window correlation handles, but
       a one-attempt-per-hour campaign evades any short window entirely.
+    - The 60 seconds is a Sigma correlation timespan, and how much time that actually buys depends
+      on the backend. Converted to a backend that renders the timespan as a fixed calendar bucket
+      rather than as a sliding window, a burst that straddles a bucket boundary is split into two
+      partial counts and can miss the threshold of three; the effective lookback varies between
+      one and two times the declared window depending on where the activity falls. Wazuh's own
+      correlation is sliding and does not have this problem. None of this has been observed
+      against lab data - no rule in this folder has been deployed to the manager, so the threshold
+      of three distinct images is reasoned, not baselined.
 level: medium

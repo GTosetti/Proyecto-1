@@ -6,7 +6,15 @@ description: |
     a web browser creating a child process that is a command shell or scripting interpreter.
     Neither parent has a routine reason to do this, and it is the first on-host step of both a
     malicious macro and a browser-delivered payload.
-    Lab measurement that motivated the rule (2026-08-11, B4 visibility exercise): of 11 Sysmon
+    Provenance, stated plainly: this is the one rule in the folder that answers nothing the lab
+    produced. Office is not installed on WIN11-VICTIMA and no browser was ever observed spawning a
+    child, so the parent and child lists come from the technique rather than from a measurement,
+    and they converge on the standard public Office-child-process detection that appears in the
+    community rulesets. What is taken from this lab is the reasoning below about which field
+    carries signal, not the process lists. It is kept in the folder because a rule that declares
+    it cannot be validated here is more useful than a gap in the coverage map, but it should not
+    be read as original work and it must not be deployed outside monitoring mode.
+    Lab measurement behind the field choice (2026-08-11, B4 visibility exercise): of 11 Sysmon
     Event ID 1 events generated in the window, exactly 1 produced an alert - Wazuh rule 92004,
     level 4, "Powershell process spawned Windows command shell instance". It fired on the
     parent-child PATTERN, not on process creation as such. The same window produced 16 Security
@@ -23,8 +31,13 @@ references:
     - https://attack.mitre.org/techniques/T1566/001/
     - https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
     - >-
-      Internal lab measurement, 2026-08-11 B4 exercise (167 events generated, 27 alerts; Sysmon EID 1 alerted
-      1 of 11, on the powershell -> cmd ancestry pattern)
+      Convergence note: the parent and child process lists in this rule match the standard public
+      Office-and-browser child-process detection found in the community rulesets. Recorded here rather
+      than presented as an original pattern.
+    - >-
+      Internal lab measurement, 2026-08-11 B4 exercise (Sysmon EID 1 alerted 1 of 11, on the
+      powershell -> cmd ancestry pattern; 16 of 16 Security 4688 events alerted at level 3 through
+      catch-all rule 67027)
 author: Proyecto-1 home SOC lab
 date: 2026-09-15
 tags:

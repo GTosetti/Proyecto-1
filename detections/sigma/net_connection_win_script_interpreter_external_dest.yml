@@ -10,8 +10,14 @@ description: |
     coverage. In the 2026-08-11 B4 exercise, 1 Sysmon 3 event was generated and 0 alerts were
     raised. In the 2026-09-07 exercise, a service scan from the attacker VM left 2 Sysmon 3
     events (inbound to 10.10.10.20:3389 from 10.10.10.5, Initiated=false) and again 0 alerts.
-    The channel reaches the SIEM and nothing looks at it; this rule closes a gap that was
-    measured rather than assumed.
+    The channel reaches the SIEM and nothing looks at it.
+    What this rule covers, and what it does not: it reads the channel that was measured to have no
+    coverage, but it targets a different case than the three events that were measured. Neither of
+    the 2026-09-07 events is outbound - both are Initiated=false - and the B4 event went to
+    10.10.10.10:443, inside the 10.0.0.0/8 range this rule excludes. None of the three would have
+    matched. The outbound-to-routable case is written first because it is the one worth an
+    analyst's queue; the two measured cases - inbound connection residue from a port scan, and an
+    interpreter talking to an internal service - remain uncovered and are not claimed otherwise.
     Timeline warning measured on this endpoint (2026-08-11): Sysmon writes Event ID 3 to the
     channel about 4 seconds after the connection happens (channel TimeCreated 17:22:41.163 vs the
     event's own UtcTime 17:22:37.162). Any timeline or correlation window built on this rule must
@@ -69,6 +75,9 @@ falsepositives:
     - The rule only sees outbound connections (Initiated=true). The measured inbound residue of a
       port scan (Initiated=false) is deliberately out of scope here; a host agent has almost no
       network visibility anyway - a 65,535-port SYN scan lasting 88 seconds produced 0
-      attributable alerts on this endpoint, which is an architecture gap for a network sensor,
-      not something another Sysmon rule can fix.
+      attributable alerts on this endpoint. Sysmon is not the only thing that could have seen it -
+      the Windows audit subcategory Audit Filtering Platform Packet Drop writes 5152/5153 for
+      packets the firewall discards, which is what the scan mostly produced. It is switched off
+      on this endpoint, deliberately, for volume, so nothing here measured it. The recommended
+      answer is still a network sensor, not another Sysmon rule.
 level: medium
