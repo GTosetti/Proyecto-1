@@ -1,0 +1,223 @@
+{
+  "name": "Home SOC lab - measured coverage",
+  "versions": {
+    "attack": "18",
+    "navigator": "5.1.0",
+    "layer": "4.5"
+  },
+  "domain": "enterprise-attack",
+  "description": "Measured ATT&CK coverage of a self-built three-VM home SOC lab (Windows 11 endpoint with Sysmon and advanced audit policy, Wazuh 4.14.7 all-in-one, Kali attacker). Scores come from queries against the alert index, not from mapping tables: 0 = nothing exercised and no mapped telemetry, 1 = telemetry exists on the endpoint but only partially or as an adjacent mechanism, 2 = telemetry generated AND confirmed collected but no rule matched (a measured detection gap), 3 = a rule fired on it in this lab. Only techniques with measured evidence appear. Note that TA0005 is named Stealth in ATT&CK v18. Full matrix and caveats: detections/coverage-matrix.md.",
+  "sorting": 0,
+  "layout": {
+    "layout": "side",
+    "aggregateFunction": "average",
+    "showID": true,
+    "showName": true,
+    "showAggregateScores": false,
+    "countUnscored": false
+  },
+  "hideDisabled": false,
+  "techniques": [
+    {
+      "techniqueID": "T1059",
+      "score": 3,
+      "enabled": true,
+      "comment": "Telemetry configured and verified on the endpoint: PowerShell 4104 ScriptBlockLogging and 4103 ModuleLogging, Security 4688 with command line enabled by registry, Sysmon EID 1 with CommandLine, ParentCommandLine and hashes. Detection evidenced through the sub-techniques below."
+    },
+    {
+      "techniqueID": "T1059.001",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-08-08: powershell.exe -EncodedCommand raised Wazuh rule 92057 at level 12 - on a Sysmon Event ID 1, NOT on the PowerShell 4104 the exercise had predicted, although the 4104 was generated. Own Sigma rule drafted (proc_creation_win_encoded_powershell.yml), not yet deployed. Evidence: investigations/001-first-alert-triage.md."
+    },
+    {
+      "techniqueID": "T1059.003",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-08-11: the powershell -> cmd transition fired rule 92004 at level 4 - the only alert produced by 11 Sysmon EID 1 events in the window, and it fired on the ancestry pattern rather than on process creation. Evidence: investigations/002-process-telemetry-correlation.md."
+    },
+    {
+      "techniqueID": "T1098",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-08-08: rule 60109 level 8 on 4720/4722, rule 60110 level 8 on 4738 x2, rule 60111 level 8 on 4726. Three single-event rules; nothing correlates them into the one sequence they belong to (user created, added to Administrators and deleted inside 8 seconds). Evidence: investigations/001-first-alert-triage.md."
+    },
+    {
+      "techniqueID": "T1543.003",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-08-08: a test service install alerted through Event ID 7045 from the System channel, while Event ID 4697 from the Security channel reached the SIEM and produced 0 alert documents. Detection depends entirely on one of the two available sources. Evidence: investigations/001-first-alert-triage.md."
+    },
+    {
+      "techniqueID": "T1548.002",
+      "score": 1,
+      "enabled": true,
+      "comment": "Never simulated; studied 2026-07-31 (4 mitigations, of which M1026 removing local admin eliminates it). The UAC linked-token mechanism it abuses was measured directly: 8 of 8 remote invocations produced a 4624 pair - elevatedToken %%1842 with a 4672, %%1843 without - and launched processes carried TokenElevationType %%1938 (Limited). No bypass path exercised and no rule."
+    },
+    {
+      "techniqueID": "T1110",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-09-07: correlation rule 60204 'Multiple Windows Logon Failures' fired twice at level 10 by accumulating 20 rule-60122 events (level 5) inside a short window. Evidence: investigations/003-smb-rdp-attack-chain.md."
+    },
+    {
+      "techniqueID": "T1110.001",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-09-07: 18 attempts from 10.10.10.5 - 15 x 4625 with SubStatus 0xC0000064 (non-existent accounts), then 3 x 0xC000006A (real account, wrong password), then a successful 4624. Alerts fired, but rule 60204 does not read SubStatus, so enumeration and targeted guessing are indistinguishable to it. Failures were spaced about 2 s apart by EnableAuthRateLimiter (2000 ms), which is the mitigation's fingerprint, not the attacker's."
+    },
+    {
+      "techniqueID": "T1016",
+      "score": 2,
+      "enabled": true,
+      "comment": "2026-08-08: ipconfig /all and systeminfo produced only generic level-3 4688 alerts from catch-all rule 67027. Telemetry generated and collected; no rule reads the command line for discovery utilities."
+    },
+    {
+      "techniqueID": "T1033",
+      "score": 2,
+      "enabled": true,
+      "comment": "2026-08-11: whoami.exe produced a Security 4688 matched by catch-all rule 67027 at level 3 - byte for byte the same treatment as sppsvc.exe - and no Sysmon rule fired on it. A single discovery command is indistinguishable from background noise; it has to be detected as a sequence. Evidence: investigations/002-process-telemetry-correlation.md."
+    },
+    {
+      "techniqueID": "T1046",
+      "score": 1,
+      "enabled": true,
+      "comment": "2026-08-08: nmap -sS -p- covered 65,535 ports in 88 s (8 open, 65,527 filtered) and produced 0 attributable alerts. 2026-09-07: an -sn sweep plus -sS -sV against 7 ports left 2 Sysmon EID 3 events and 0 Security 5156, because the Filtering Platform Connection subcategory is deliberately not audited. Structural collection gap: a host agent reads Windows event logs and Windows does not log a SYN to a closed port. Needs a network sensor, not a rule."
+    },
+    {
+      "techniqueID": "T1087",
+      "score": 2,
+      "enabled": true,
+      "comment": "2026-08-11: Security 4798/4799 (enumeration of a user's local group membership, the SharpHound signature) generated 2 events and produced 0 alerts, confirmed against a widened time window. The 2026-08-08 batch (net user, net localgroup administrators) produced only level-3 4688 alerts."
+    },
+    {
+      "techniqueID": "T1135",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-09-07: the SMB null session preceding share enumeration produced Security 4624 ANONYMOUS LOGON, type 3, NTLM, from 10.10.10.5, flagged by rule 92652 at level 6 - the only reliable trace of the whole reconnaissance phase, and a level 6 in an exercise whose twelve level-15 alerts were all noise. The authenticated --shares listing of ADMIN$/C$/IPC$ left no distinct event."
+    },
+    {
+      "techniqueID": "T1021.001",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-09-07: rule 92657 fired 3 times at level 6 with this mapping. With NLA active the 4 failed RDP logons appeared as 4625 logon type 3, not type 10; only the completed graphical session produced 4624 type 10 (Negotiate, User32) with TS-LocalSessionManager 41->42->21->22->24. A detection keyed on 'type 10' would miss every failure against a default-configured target."
+    },
+    {
+      "techniqueID": "T1078.003",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-09-07: a guessed local credential was accepted over SMB (4624 type 3, NTLM, rule 92657) and later over RDP (4624 type 10). The account is a local administrator, so access to ADMIN$ and C$ implies full control of the endpoint. Nothing in the alert itself separates this from a legitimate administrator logon."
+    },
+    {
+      "techniqueID": "T1659",
+      "score": 0,
+      "enabled": true,
+      "comment": "Studied 2026-07-31 and never executed. Two mitigations: M1041 (encrypt traffic end to end) eliminates the technique outright and leaves nothing to detect. The channels its detection strategy needs - Sysmon 11, then Sysmon 1 with the browser as parent, then Sysmon 3 - are ingested by this lab, but no event for the technique exists."
+    },
+    {
+      "techniqueID": "T1105",
+      "score": 3,
+      "enabled": true,
+      "comment": "Rule 92213 ('Executable file dropped in folder commonly used by malware', level 15) carries this mapping and fired 18 times - 1 on 2026-08-08, 5 on 2026-08-11, 12 on 2026-09-07 - and every one was a false positive on __PSScriptPolicyTest_*.ps1 written by the signed system powershell.exe. No real tool transfer was ever staged, so the true-positive path is unvalidated and the rule is tuning debt."
+    },
+    {
+      "techniqueID": "T1531",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-08-08: co-mapped with T1098 on rule 60111 (level 8) firing on Security 4726, the deletion of the test account created eight seconds earlier."
+    },
+    {
+      "techniqueID": "T1036.003",
+      "score": 2,
+      "enabled": true,
+      "comment": "Not simulated; identified by negative evidence on 2026-08-11. Sysmon EID 1 carries OriginalFileName (PowerShell.EXE), which survives a rename and is collected here; Security 4688 has no equivalent field, so the technique is undetectable from the Windows Security log alone. No rule reads the field."
+    },
+    {
+      "techniqueID": "T1036.004",
+      "score": 2,
+      "enabled": true,
+      "comment": "Not simulated, but its mapped telemetry was measured on 2026-08-08: Security 4697 was confirmed in the endpoint log with Get-WinEvent, the Security channel is forwarded by the agent, and a wazuh-alerts-* query returned 0 documents containing 4697. ATT&CK lists zero mitigations for this technique, which makes it a detection problem by definition."
+    },
+    {
+      "techniqueID": "T1070.001",
+      "score": 0,
+      "enabled": true,
+      "comment": "Security Event ID 1102 has never been generated in this lab - the only one of the twelve priority Event IDs with no measured data, so its detection path is untested. Planned exercise; the base-limpia snapshot exists for the rollback."
+    },
+    {
+      "techniqueID": "T1484",
+      "score": 3,
+      "enabled": true,
+      "comment": "2026-08-08: rule 60154 ('Administrators Group Changed') fired at level 12 on Security 4732 and again on 4733, inside a create-user / add-to-Administrators / delete sequence completed in 8 seconds. The ATT&CK mapping is Wazuh's own, attached to the rule; 4732 arguably belongs to T1098."
+    },
+    {
+      "techniqueID": "T1684.002",
+      "score": 0,
+      "enabled": true,
+      "comment": "Theory only, studied 2026-07-31. Not reproducible in this lab: there is no mail server. Three mitigations, two of which (SPF/DKIM/DMARC checks and user training) depend on parties the defender does not control. Numbered T1672 before the ATT&CK v18 regrouping under T1684."
+    }
+  ],
+  "gradient": {
+    "colors": [
+      "#efefef",
+      "#a6cee3",
+      "#2b7bba",
+      "#0b3d66"
+    ],
+    "minValue": 0,
+    "maxValue": 3
+  },
+  "legendItems": [
+    {
+      "label": "0 - Not covered: never exercised, no mapped telemetry in the lab",
+      "color": "#efefef"
+    },
+    {
+      "label": "1 - Telemetry generated only: partial or adjacent events on the endpoint, detection untested",
+      "color": "#a6cee3"
+    },
+    {
+      "label": "2 - Collected but no rule matched: a detection gap measured with a query",
+      "color": "#2b7bba"
+    },
+    {
+      "label": "3 - A rule fired on it in this lab (see comment for the rule ID and date)",
+      "color": "#0b3d66"
+    }
+  ],
+  "metadata": [
+    {
+      "name": "Lab",
+      "value": "Self-built 3-VM home lab: Windows 11 Pro endpoint (Sysmon, advanced audit policy) -> Wazuh 4.14.7 all-in-one on Ubuntu Server 24.04.4, Kali attacker, VirtualBox NAT network 10.10.10.0/24"
+    },
+    {
+      "name": "Scope",
+      "value": "23 techniques with measured evidence. Techniques this lab has not touched are absent rather than scored 0."
+    },
+    {
+      "name": "Measurement window",
+      "value": "2026-07-29 to 2026-09-07"
+    },
+    {
+      "name": "How scores were obtained",
+      "value": "Endpoint side with Get-WinEvent; SIEM side with JSON queries against wazuh-alerts-* through the Wazuh dashboard console proxy, filtered on data.win.system.systemTime rather than @timestamp (the manager clock ran about 1.8 s behind the endpoint)."
+    },
+    {
+      "name": "Honest coverage",
+      "value": "13 of 23 techniques (57%) had a rule fire. One of those 13 (T1105) only ever fired on false positives - 18 firings, 18 false positives. Only 3 firings came from a rule reading a pattern rather than a single event. Rules written by the author and deployed: 0."
+    },
+    {
+      "name": "Largest uncovered tactic",
+      "value": "Stealth (TA0005, called Defense Evasion before ATT&CK v18): 4 of 5 techniques uncovered, 5 of 6 if T1548.002 is counted here as well as under Privilege Escalation. Discovery is level with it at 4 of 5 and is the more actionable gap, because all five of its techniques were executed and their telemetry reached the SIEM."
+    },
+    {
+      "name": "Caveat",
+      "value": "A coverage claim built by searching an alert index is bounded by the ruleset, not by what the endpoint produced: on 2026-08-08 about 2,100 events reported to the manager left 835 alerts indexed; on 2026-08-11, 167 events generated produced 27 alerts."
+    }
+  ],
+  "showTacticRowBackground": true,
+  "tacticRowBackground": "#dddddd",
+  "selectTechniquesAcrossTactics": true,
+  "selectSubtechniquesWithParent": false,
+  "selectVisibleTechniques": false
+}

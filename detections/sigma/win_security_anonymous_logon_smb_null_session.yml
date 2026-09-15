@@ -1,0 +1,75 @@
+title: Anonymous Logon From A Remote Address (SMB Null Session)
+id: 7fb7b575-48d9-4af1-9c60-f7e9e439a488
+name: win_security_4624_anonymous_logon_remote
+status: experimental
+description: |
+  A successful network logon (type 3) for ANONYMOUS LOGON originating from an address that
+  is not the local host. This is the SMB null session that precedes share and account
+  enumeration.
+  Measured in the home lab on 2026-09-07: a null session opened from the attacker VM at
+  18:27:42 produced a Security 4624 with TargetUserName ANONYMOUS LOGON, LogonType 3,
+  AuthenticationPackageName NTLM, IpAddress 10.10.10.5. Wazuh's stock ruleset flagged it as
+  rule 92652 at level 6.
+  Why this rule is worth having even though a stock rule already covers it: in the same
+  exercise, the reconnaissance phase left almost nothing else behind. An nmap -sn sweep and
+  an nmap -sS -sV scan of 7 ports produced 2 Sysmon Event ID 3 records and 0 Security 5156
+  records (the Filtering Platform Connection subcategory is not audited, deliberately, as it
+  is very high volume). The anonymous logon was the only reliable host-side trace of the
+  whole phase - and it was scored level 6, while twelve level 15 alerts in the same exercise
+  were all false positives. Rule level is an opinion held by whoever wrote the rule.
+references:
+  - >-
+    https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4624
+  - https://attack.mitre.org/techniques/T1135/
+  - https://attack.mitre.org/techniques/T1087/001/
+  - >-
+    Lab measurement 2026-09-07: SMB null session from 10.10.10.5 at 18:27:42; 4624 ANONYMOUS LOGON type 3
+    NTLM; Wazuh rule 92652 level 6
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.discovery
+  - attack.t1135
+  - attack.t1087.001
+logsource:
+  product: windows
+  service: security
+  definition: >-
+    Requires the Logon audit subcategory (success). Anonymous logons are recorded as 4624 with LogonType 3 and
+    an empty or null authentication identity.
+detection:
+  anonymous_network_logon:
+    EventID: 4624
+    TargetUserName: 'ANONYMOUS LOGON'
+    LogonType: 3
+  filter_local_address:
+    IpAddress:
+      - '-'
+      - '127.0.0.1'
+      - '::1'
+  condition: anonymous_network_logon and not filter_local_address
+fields:
+  - IpAddress
+  - IpPort
+  - WorkstationName
+  - AuthenticationPackageName
+  - LogonProcessName
+  - TargetLogonId
+falsepositives:
+  - >-
+    Legacy devices that browse SMB anonymously - network printers and multifunction devices, NAS appliances,
+    older backup agents and some monitoring probes. In an environment that still has them, this rule needs an
+    allowlist of source addresses or it will be constant noise; that is a property of the environment, not of
+    the rule.
+  - >-
+    Inter-domain trust traffic and some Netlogon operations on domain-joined hosts. The lab endpoint is not
+    domain-joined, so this class of false positive could not be measured here and must be assessed before
+    deploying the rule on a member server.
+  - >-
+    The local-address filter exists because Windows itself records anonymous logons with IpAddress "-" or
+    "::1" during normal operation. Those are excluded rather than alerted on.
+  - >-
+    Measured on this endpoint: exactly one event matched during the 2026-09-07 exercise, and it was the
+    attacker. No benign anonymous logon from a remote address was recorded in any measured window.
+level: medium

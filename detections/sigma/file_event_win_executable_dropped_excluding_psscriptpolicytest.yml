@@ -1,0 +1,83 @@
+title: Executable or Script Dropped in a User-Writable Folder Excluding the PowerShell Policy Test File
+id: 3d7f9014-6e8b-42c5-9a3e-1c58d0b47f62
+status: experimental
+description: |
+    Detects a Sysmon Event ID 11 file-create of an executable or script in a folder that any user
+    can write to (%TEMP%, Downloads, AppData\Roaming, C:\Users\Public, C:\Windows\Temp), and
+    explicitly excludes the one false positive this lab has measured three separate times.
+    This is a tuning rule. The measurement behind it: Wazuh rule 92213 ("Executable file dropped
+    in folder commonly used by malware", mapped to T1105) fires at level 15 - the maximum - on
+    C:\Users\<LAB_USER>\AppData\Local\Temp\__PSScriptPolicyTest_<random>.ps1, a file that
+    PowerShell writes for itself to test its own execution policy. It was the ONLY level-15 alert
+    in the 2026-08-08 end-to-end verification (82 alerts, level distribution 3->53, 4->7, 5->13,
+    8->5, 12->3, 15->1), and it reproduced 5 times on 2026-08-11 and 12 times on 2026-09-07. In
+    the same 2026-08-08 window, the simulated intrusion that actually mattered - a local user
+    created, added to Administrators and deleted within 8 seconds (4720 -> 4732 -> 4726) -
+    surfaced only at levels 8 and 12, below the noise.
+    Why it is benign: the writer is the signed system PowerShell at
+    C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe, the filename prefix is fixed by
+    PowerShell itself, the extension is always .ps1, and the file is created and removed in the
+    course of an execution-policy check. Nothing is executed from it by an attacker.
+    Why it is excluded this narrowly rather than by suppressing the whole rule: the exclusion
+    requires all three of the writer's full system path, the __PSScriptPolicyTest_ prefix and the
+    .ps1 extension. A file dropped in the same folder by any other process, or any other file
+    dropped by PowerShell, still alerts. Writing to System32 requires administrative rights, so an
+    attacker cannot cheaply place a binary at the excluded path to inherit the exclusion.
+    The level is deliberately medium, not high. Dropping a file into %TEMP% is a precondition of
+    an intrusion, not proof of one, and this lab is the evidence for what happens when that
+    distinction is ignored: a maximum-severity rule that fired 18 times on benign activity and 0
+    times on anything real teaches an analyst to stop reading level 15.
+references:
+    - https://attack.mitre.org/techniques/T1105/
+    - https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+    - https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_execution_policies
+    - >-
+      Internal lab measurement, 2026-08-08 / 2026-08-11 / 2026-09-07 (Wazuh rule 92213 at level 15 on
+      __PSScriptPolicyTest_*.ps1 - 1, 5 and 12 occurrences, all benign, all written by signed system
+      PowerShell)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.command-and-control
+    - attack.t1105
+logsource:
+    category: file_event
+    product: windows
+detection:
+    selection_path:
+        TargetFilename|contains:
+            - '\AppData\Local\Temp\'
+            - '\AppData\Roaming\'
+            - '\Downloads\'
+            - '\Users\Public\'
+            - '\Windows\Temp\'
+    selection_extension:
+        TargetFilename|endswith:
+            - '.exe'
+            - '.dll'
+            - '.ps1'
+            - '.bat'
+            - '.cmd'
+            - '.hta'
+            - '.js'
+            - '.vbs'
+            - '.scr'
+    filter_main_psscriptpolicytest:
+        Image:
+            - 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+            - 'C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe'
+        TargetFilename|contains: '\AppData\Local\Temp\__PSScriptPolicyTest_'
+        TargetFilename|endswith: '.ps1'
+    condition: selection_path and selection_extension and not filter_main_psscriptpolicytest
+falsepositives:
+    - Software installers and updaters, which routinely stage executables in %TEMP% before
+      copying them to Program Files. This is the dominant remaining noise source and has to be
+      tuned per environment by writer process, not by folder.
+    - Any file the user knowingly downloads to the Downloads folder.
+    - PowerShell 7 (pwsh.exe) writes its own __PSScriptPolicyTest_ files from a different image
+      path. It is not installed in this lab, so its path was not measured and is deliberately not
+      excluded - adding it should follow a measurement, not an assumption.
+    - Sysmon Event ID 11 depends on the file-create rules of the loaded configuration. This
+      endpoint runs the SwiftOnSecurity configuration; a different configuration changes what
+      this rule can see, and absence of a match is not evidence that nothing was written.
+level: medium

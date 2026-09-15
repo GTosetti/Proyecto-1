@@ -1,0 +1,224 @@
+title: Failed Network Logon (Logon Type 3)
+id: f4131de0-1216-4215-a9b1-6d42d68f726e
+name: win_security_4625_logon_type_3
+status: experimental
+description: |
+  Base event: any failed logon of type 3 (network). On its own this says almost nothing -
+  SMB, RDP behind Network Level Authentication, WinRM and file-share access all produce the
+  same logon type on failure.
+  Measured in the home lab on 2026-09-07: four failed RDP logins at 18:33:28-18:33:29 were
+  recorded as 4625 with LogonType 3, not LogonType 10. With NLA enabled, authentication
+  happens before the session is created, so a failed RDP logon never reaches the point where
+  Windows would call it a RemoteInteractive logon. The only LogonType 10 of the whole
+  exercise appeared at 18:35:09, when a full graphical session actually established
+  (AuthenticationPackageName Negotiate, LogonProcessName User32).
+  Consequence for detection engineering, and the reason this file exists: a rule written as
+  "RDP brute force = 4625 LogonType 10" misses every NLA-protected target, and NLA is the
+  default. The logon type has to be corroborated from the Terminal Services channel instead.
+  This document does not alert on its own.
+references:
+  - >-
+    https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4625
+  - https://attack.mitre.org/techniques/T1110/001/
+  - https://attack.mitre.org/techniques/T1021/001/
+  - >-
+    Lab measurement 2026-09-07: 4 failed RDP logins at 18:33:28-18:33:29 recorded as 4625 LogonType 3; the
+    single LogonType 10 of the exercise appeared only at 18:35:09 on a successful graphical session
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.credential-access
+  - attack.t1110.001
+logsource:
+  product: windows
+  service: security
+  definition: 'Requires the Logon audit subcategory (failure).'
+detection:
+  failed_network_logon:
+    EventID: 4625
+    LogonType: 3
+  condition: failed_network_logon
+fields:
+  - IpAddress
+  - TargetUserName
+  - SubStatus
+  - WorkstationName
+  - LogonProcessName
+  - AuthenticationPackageName
+falsepositives:
+  - >-
+    Expected in normal operation on any host that serves SMB. Type 3 failures are background noise and this
+    document is not meant to be alerted on directly.
+level: informational
+---
+title: Terminal Services Listener Received A Remote Desktop Connection
+id: 37fe8974-20a9-44a5-bf05-425d7cfcc1ac
+name: win_terminalservices_rcm_connection
+status: experimental
+description: |
+  Base event: the RDP listener handled an incoming connection. Used only as corroboration,
+  to tell an analyst that the network logon failures on the same host in the same window
+  were RDP and not SMB.
+  Event ID 1149 ('Remote Desktop Services: User authentication succeeded') was measured in
+  the home lab on 2026-09-07 at 18:33:30-18:33:31, carrying Source Network Address
+  10.10.10.5, during the same minute as the four failed RDP logons. Event ID 261
+  ('Listener RDP-Tcp received a connection') is included because it is written when the
+  listener accepts a connection regardless of the authentication outcome, which makes it the
+  better corroborator for a pure-failure burst - but it was NOT separately confirmed in the
+  lab during the failed attempts, so that half of this selection is unvalidated and is
+  flagged as such rather than presented as measured.
+  The Channel value is repeated inside the detection on purpose. Converted on 2026-09-15
+  with sigma-cli 3.1.0 and the ecs_windows pipeline, the logsource service
+  terminalservices-remoteconnectionmanager has no mapping in that pipeline, and the channel
+  restriction was silently dropped from the query, leaving a bare match on event IDs 261 and
+  1149 across every index. Naming the channel as a field survives any pipeline. The sibling
+  service terminalservices-localsessionmanager IS mapped by the same pipeline, which is why
+  the rule for successful sessions does not need the same workaround.
+references:
+  - https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/remote-desktop-services-events
+  - https://attack.mitre.org/techniques/T1021/001/
+  - >-
+    Lab measurement 2026-09-07: TerminalServices-RemoteConnectionManager 1149 at 18:33:30-18:33:31 with Source
+    Network Address 10.10.10.5
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.lateral-movement
+  - attack.t1021.001
+logsource:
+  product: windows
+  service: terminalservices-remoteconnectionmanager
+  definition: >-
+    Requires the Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational channel to be
+    collected. On the lab endpoint the Wazuh agent forwards Security, System, Application,
+    Microsoft-Windows-Sysmon/Operational and Microsoft-Windows-PowerShell/Operational only, so this channel
+    must be added to ossec.conf before the correlation below can fire.
+detection:
+  rdp_listener_activity:
+    Channel: 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'
+    EventID:
+      - 261
+      - 1149
+  condition: rdp_listener_activity
+fields:
+  - Param1
+  - Param3
+falsepositives:
+  - >-
+    Every legitimate RDP connection produces these events. The document is corroboration, not a detection, and
+    must not be alerted on by itself.
+level: informational
+---
+title: Burst Of Failed Network Logons From One Source
+id: 47e61127-0856-4df7-b90f-45e15fdbd4ea
+name: win_security_4625_type_3_burst
+status: experimental
+description: |
+  Several type 3 logon failures from the same source address against the same host inside
+  five minutes. Protocol-agnostic: this covers SMB, RDP behind NLA and WinRM equally,
+  because Windows records all of them the same way on failure.
+  Deploy this document where the Terminal Services channels are not collected. It is the
+  part of this file that converts to a plain query on every backend tested; the RDP
+  attribution added by the last document needs a backend that supports correlation.
+  Threshold reasoning from lab data: the 2026-09-07 RDP attack produced 4 failures in under
+  two seconds, so the threshold is set at 4. Note that the SMB rate limiter measured on the
+  same endpoint (EnableAuthRateLimiter = True, InvalidAuthenticationDelayTimeInMs = 2000)
+  does not shape RDP attempts the way it shapes SMB ones, so an RDP burst can be tighter
+  than an SMB burst of the same size.
+references:
+  - https://attack.mitre.org/techniques/T1110/001/
+  - 'Lab measurement 2026-09-07: 4 x 4625 LogonType 3 from 10.10.10.5 at 18:33:28-18:33:29'
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.credential-access
+  - attack.t1110.001
+correlation:
+  type: event_count
+  rules:
+    - win_security_4625_logon_type_3
+  group-by:
+    - Computer
+    - IpAddress
+  timespan: 5m
+  condition:
+    gte: 4
+falsepositives:
+  - >-
+    A host with a stale credential retrying an SMB mount produces exactly this shape - four failures in five
+    minutes is an ordinary Windows retry pattern. Triage by reading SubStatus on the underlying events, which
+    says whether the account exists.
+  - A user reconnecting to a share after a password change.
+  - >-
+    Because the grouping includes the source address, a single misconfigured host produces one alert rather
+    than one per attempt. The lab measured the opposite behaviour in the stock ruleset: Wazuh rule 60122 fired
+    20 times at level 5 during the 2026-09-07 exercise, one per failure.
+level: medium
+---
+title: RDP Brute Force Behind Network Level Authentication
+id: e8face8b-5f25-43f7-8bbc-d9fc9b1cb046
+status: experimental
+description: |
+  A burst of failed type 3 logons on a host that was also handling RDP listener activity in
+  the same five-minute window. This reclassifies a generic network logon failure burst as an
+  RDP attack, which the Security log alone cannot do when NLA is enabled.
+  Measured basis, 2026-09-07 home lab: four failed RDP logins from 10.10.10.5 produced four
+  4625 events with LogonType 3 - indistinguishable by logon type from the SMB failures
+  recorded minutes earlier in the same exercise - while the Terminal Services channel
+  recorded the RDP context, including the source network address, separately. Neither
+  channel identifies the attack on its own; the pair does.
+  Grouping caveat, stated because it weakens the rule and hiding it would be dishonest: the
+  two channels do not share a field name for the source address (4625 uses IpAddress, 1149
+  carries it in Param3, and 261 does not carry it at all), so the correlation groups by host
+  and the analyst must compare the two addresses manually during triage. On a backend that
+  supports field aliases, restrict the Terminal Services document to Event ID 1149 and alias
+  IpAddress to Param3 to group by source address directly.
+  Backend caveat, measured on 2026-09-15 with sigma-cli 3.1.0: this document references
+  another correlation rule rather than a plain rule, which the Sigma specification allows but
+  no installed backend renders usefully. The opensearch_lucene and lucene backends report
+  that correlation is not supported at all; the ES|QL backend emits the burst query nested
+  inside a where clause, which is not valid ES|QL. Treat the YAML as the specification of
+  intent and implement it natively in the SIEM - the README shows the equivalent Wazuh
+  composite rule, which is how this lab would actually run it.
+references:
+  - https://attack.mitre.org/techniques/T1021/001/
+  - https://attack.mitre.org/techniques/T1110/001/
+  - https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/remote-desktop-services-events
+  - >-
+    Lab measurement 2026-09-07: 4 failed RDP logons recorded as 4625 LogonType 3 at 18:33:28-18:33:29, with
+    TerminalServices-RemoteConnectionManager 1149 at 18:33:30-18:33:31 from the same source
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.credential-access
+  - attack.t1110.001
+  - attack.lateral-movement
+  - attack.t1021.001
+correlation:
+  type: temporal
+  rules:
+    - win_security_4625_type_3_burst
+    - win_terminalservices_rcm_connection
+  group-by:
+    - Computer
+  timespan: 5m
+falsepositives:
+  - >-
+    Coincidence on a busy host: because the correlation groups by host and not by source address, an unrelated
+    SMB failure burst from one machine and a legitimate RDP login from another, inside the same five minutes,
+    will correlate. On a terminal server or a jump host this will happen regularly and the rule should be
+    scoped to endpoints where RDP is not routine.
+  - >-
+    A user who mistypes their RDP password several times - four attempts in five minutes is well within human
+    behaviour. Triage by checking whether the source address has ever authenticated successfully to this host
+    before.
+  - Automated RDP health checks and remote-support tooling that reconnects on a schedule.
+  - >-
+    Not measured in this lab: no benign RDP traffic exists on this endpoint, so the false positive rate of
+    this rule has not been observed, only reasoned about. Treat the threshold of 4 as a lab value that needs
+    re-baselining anywhere RDP is used in anger.
+level: medium

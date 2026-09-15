@@ -1,0 +1,65 @@
+title: PowerShell Launched With an Encoded Command Line
+id: 7f3a1c2e-4b8d-4e6a-9c1f-2d5b8a3e7c40
+status: experimental
+description: |
+    Detects powershell.exe or pwsh.exe started with the -EncodedCommand switch or any of its
+    accepted abbreviations (-e, -ec, -en, -enc), which hides the executed script from anyone
+    reading only the command line.
+    Lab measurement that motivated the rule (2026-08-08, WIN11-VICTIMA, Windows 11 Pro build
+    10.0.26200): an encoded PowerShell command was executed and Wazuh raised rule 92057 at
+    level 12 on a Sysmon Event ID 1 - NOT on the PowerShell 4104 ScriptBlockLogging event the
+    exercise had predicted, even though the 4104 was generated. Writing the detection against
+    the process_creation category rather than against the PowerShell operational channel
+    reproduces the source that actually carried the evidence.
+    The rule is written to match on either telemetry source available on the endpoint: Security
+    4688 (command line present only because ProcessCreationIncludeCmdLine_Enabled was set to 1
+    by hand) and Sysmon Event ID 1. Only Sysmon supplies OriginalFileName, so the second
+    selection branch is what still matches if powershell.exe is renamed (measured: Security
+    4688 has no equivalent field, 2026-08-11).
+    Tag note: ATT&CK v18 renamed tactic TA0005 from Defense Evasion to Stealth, so the tactic tag
+    reads attack.stealth. Most third-party documentation still uses the old name.
+references:
+    - https://attack.mitre.org/techniques/T1059/001/
+    - https://attack.mitre.org/techniques/T1027/
+    - https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe
+    - >-
+      Internal lab measurement, 2026-08-08 end-to-end verification (82 alerts in a 9 s window; encoded command
+      surfaced through Wazuh rule 92057 level 12 on Sysmon EID 1)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.execution
+    - attack.t1059.001
+    - attack.stealth
+    - attack.t1027
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_image:
+        - Image|endswith:
+              - '\powershell.exe'
+              - '\pwsh.exe'
+        - OriginalFileName:
+              - 'PowerShell.EXE'
+              - 'pwsh.dll'
+    selection_encoded:
+        CommandLine|contains|windash:
+            - ' -e '
+            - ' -ec '
+            - ' -en '
+            - ' -enc'
+    condition: selection_image and selection_encoded
+falsepositives:
+    - Software installers, MDM/RMM agents and scheduled tasks that wrap PowerShell payloads in
+      -EncodedCommand to survive quoting. Baseline the parent process before deploying - in this
+      lab the only parents observed launching PowerShell were explorer.exe, cmd.exe and
+      VBoxService.exe (the VirtualBox guest control service).
+    - Sysmon Event ID 1 and Security 4688 both fire for the same process, so a single execution
+      produces two matches unless the backend deduplicates. Measured in the same lab, for one
+      process, 4688 reported NewProcessId 0x1250 (hexadecimal) while Sysmon 1 reported
+      ProcessId 4688 (decimal) - the fields share a name but not a meaning or a base.
+    - Short switches are matched with surrounding spaces to avoid colliding with -ExecutionPolicy;
+      an operator who writes -Enc without a preceding space (for example immediately after a
+      quote) will still match, which is intended.
+level: high

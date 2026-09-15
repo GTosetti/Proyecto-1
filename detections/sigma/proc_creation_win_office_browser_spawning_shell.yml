@@ -1,0 +1,75 @@
+title: Office or Browser Process Spawning a Shell or Scripting Interpreter
+id: 1b9e5d47-3c2a-4f81-8e6d-9a4c7b2f1e33
+status: experimental
+description: |
+    Detects a document application (Word, Excel, PowerPoint, Outlook, Access, OneNote, Visio) or
+    a web browser creating a child process that is a command shell or scripting interpreter.
+    Neither parent has a routine reason to do this, and it is the first on-host step of both a
+    malicious macro and a browser-delivered payload.
+    Lab measurement that motivated the rule (2026-08-11, B4 visibility exercise): of 11 Sysmon
+    Event ID 1 events generated in the window, exactly 1 produced an alert - Wazuh rule 92004,
+    level 4, "Powershell process spawned Windows command shell instance". It fired on the
+    parent-child PATTERN, not on process creation as such. The same window produced 16 Security
+    4688 events that all alerted at level 3 through catch-all rule 67027, which is coverage
+    without discrimination. Ancestry is therefore the field that carries signal on this endpoint,
+    and this rule extends the one pattern that worked to the parents that matter.
+    ParentImage is supplied by Sysmon Event ID 1. Security 4688 carries a parent process name but
+    no ParentCommandLine (measured 2026-08-11: 4688 is missing ParentCommandLine, hashes,
+    OriginalFileName, file metadata and CurrentDirectory relative to Sysmon 1), so a match sourced
+    from 4688 alone will not show what the parent was doing.
+references:
+    - https://attack.mitre.org/techniques/T1059/001/
+    - https://attack.mitre.org/techniques/T1059/003/
+    - https://attack.mitre.org/techniques/T1566/001/
+    - https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+    - >-
+      Internal lab measurement, 2026-08-11 B4 exercise (167 events generated, 27 alerts; Sysmon EID 1 alerted
+      1 of 11, on the powershell -> cmd ancestry pattern)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.execution
+    - attack.t1059.001
+    - attack.t1059.003
+    - attack.initial-access
+    - attack.t1566.001
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_parent:
+        ParentImage|endswith:
+            - '\winword.exe'
+            - '\excel.exe'
+            - '\powerpnt.exe'
+            - '\outlook.exe'
+            - '\msaccess.exe'
+            - '\onenote.exe'
+            - '\visio.exe'
+            - '\chrome.exe'
+            - '\msedge.exe'
+            - '\firefox.exe'
+            - '\iexplore.exe'
+            - '\brave.exe'
+            - '\opera.exe'
+    selection_child:
+        Image|endswith:
+            - '\cmd.exe'
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\wsl.exe'
+    condition: selection_parent and selection_child
+falsepositives:
+    - Browser and Office updaters occasionally shell out to cmd.exe. The honest handling is a
+      per-environment allowlist on the child CommandLine after a baseline period, not a wider
+      exclusion here; this lab has no such baseline yet because no browser or Office application
+      was ever observed spawning a child in the measured windows.
+    - Legitimate business macros in organisations that use Excel or Access as an automation front
+      end. Not present in this lab - Office is not installed on WIN11-VICTIMA - so the rule is
+      untested against that noise source and should be run in monitoring mode first.
+    - If the backend maps this rule onto Security 4688 as well as Sysmon Event ID 1, every match
+      appears twice, once per source.
+level: high

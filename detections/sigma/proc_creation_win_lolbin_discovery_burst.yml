@@ -1,0 +1,123 @@
+title: Discovery Command Executed From a Built-in Utility
+id: 2c48b6f9-5a13-4e7d-b0f4-7d9128e3c561
+name: lolbin_discovery_command_single
+status: experimental
+description: |
+    Base rule for the discovery-burst correlation below. On its own a single one of these
+    commands is not an alert, and this repository has the measurement to say so: on 2026-08-11
+    whoami.exe produced a Security 4688 matched by catch-all Wazuh rule 67027 at level 3 -
+    byte for byte the same treatment as sppsvc.exe, a routine system process - and no Sysmon
+    rule fired on it either. Security 4798/4799 (enumeration of a user's local group membership)
+    generated 2 events and 0 alerts in the same window, confirmed against a widened time range.
+    This rule therefore carries level informational and exists to be counted, not to be triaged.
+references:
+    - https://attack.mitre.org/techniques/T1033/
+    - https://attack.mitre.org/techniques/T1087/001/
+    - https://attack.mitre.org/techniques/T1016/
+    - https://attack.mitre.org/techniques/T1082/
+    - >-
+      Internal lab measurement, 2026-08-11 B4 exercise (whoami.exe alerted only through catch-all rule 67027
+      at level 3; 4798/4799 alerted 0 of 2)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.discovery
+    - attack.t1033
+    - attack.t1087.001
+    - attack.t1016
+    - attack.t1082
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    selection_whoami:
+        Image|endswith: '\whoami.exe'
+    selection_net:
+        Image|endswith:
+            - '\net.exe'
+            - '\net1.exe'
+        CommandLine|contains:
+            - ' user'
+            - ' localgroup'
+            - ' group'
+            - ' view'
+            - ' share'
+            - ' accounts'
+    selection_other:
+        Image|endswith:
+            - '\nltest.exe'
+            - '\systeminfo.exe'
+            - '\ipconfig.exe'
+            - '\arp.exe'
+            - '\quser.exe'
+            - '\tasklist.exe'
+            - '\hostname.exe'
+            - '\route.exe'
+            - '\netstat.exe'
+    condition: 1 of selection_*
+falsepositives:
+    - Every one of these binaries is used routinely by administrators and by logon scripts. That
+      is the point of the base rule being informational; only the correlation is meant to reach a
+      queue.
+level: informational
+---
+title: Living-off-the-Land Discovery Burst From a Single Parent
+id: c4d81f60-7a35-4b92-b1e8-6f3d05a9c728
+status: experimental
+description: |
+    Fires when three or more DISTINCT built-in discovery utilities are launched by the same
+    parent process within 60 seconds. This is the pattern a hands-on-keyboard intruder produces
+    in the first minute after landing on a host.
+    Lab measurement that motivated the rule (2026-08-11): discovery activity is not detectable
+    one command at a time on this endpoint. whoami.exe - the first thing most intruders run -
+    produced an alert identical to the one produced by a routine system process, at level 3,
+    because a catch-all rule matched all 16 of the window's 4688 events. The commands only become
+    distinguishable from background noise when they are counted as a sequence under one parent.
+    Grouping is on ParentProcessGuid rather than on a PID. Measured reason: Sysmon supplies a
+    ProcessGuid that never recycles and that ties a process to its network (Sysmon 3) and DNS
+    (Sysmon 22) events - all three carried the same GUID segment in the 2026-08-11 exercise -
+    while Security 4688 has no stable process identifier and expresses PIDs in hexadecimal where
+    Sysmon uses decimal. A correlation built on PIDs inverts the tree silently. Backends without
+    ParentProcessGuid should group on the logon session instead (Security SubjectLogonId /
+    Sysmon LogonId, verified equal end to end in this lab: 4624 TargetLogonId -> 4688
+    SubjectLogonId -> Sysmon 1 LogonId -> 4634 TargetLogonId).
+    The count is over distinct Image values, not over events, so one command repeated in a loop
+    does not reach the threshold on its own.
+references:
+    - https://attack.mitre.org/tactics/TA0007/
+    - https://attack.mitre.org/techniques/T1033/
+    - https://attack.mitre.org/techniques/T1087/001/
+    - >-
+      Internal lab measurement, 2026-08-11 B4 exercise (whoami.exe indistinguishable from sppsvc.exe at level
+      3; ProcessGuid shared across Sysmon EID 1, 3 and 22)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.discovery
+    - attack.t1033
+    - attack.t1087.001
+    - attack.t1016
+    - attack.t1082
+correlation:
+    type: value_count
+    rules:
+        - lolbin_discovery_command_single
+    group-by:
+        - ParentProcessGuid
+    timespan: 1m
+    condition:
+        gte: 3
+        field: Image
+falsepositives:
+    - Inventory, monitoring and endpoint-management agents run exactly this sequence on a
+      schedule. Identify the parent once and exclude that parent, not the commands.
+    - Logon scripts and imaging or provisioning tasks, which run several discovery utilities from
+      one cmd.exe within seconds of a logon.
+    - Troubleshooting by an administrator at a console, which is the same behaviour as the attack
+      and is separated only by who was logged on - take the LogonId from the parent and check the
+      4624 that opened that session.
+    - A 60 second window is short enough to miss a deliberately slow operator. The same reasoning
+      applied to failed logons in this lab, where the built-in SMB rate limiter spaced
+      authentication failures about 2 seconds apart, which short-window correlation handles, but
+      a one-attempt-per-hour campaign evades any short window entirely.
+level: medium

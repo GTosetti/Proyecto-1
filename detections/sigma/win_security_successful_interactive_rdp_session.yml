@@ -1,0 +1,167 @@
+title: Successful RemoteInteractive Logon (Logon Type 10)
+id: 8bb07c4a-2f88-4bb0-8dfb-70874f80842d
+name: win_security_4624_logon_type_10
+status: experimental
+description: |
+  Base event: a successful logon of type 10, RemoteInteractive. With Network Level
+  Authentication enabled this type appears only when a graphical session is actually
+  established, never on a failure.
+  Measured in the home lab on 2026-09-07: the only LogonType 10 of the entire attack
+  exercise was recorded at 18:35:09, when an xfreerdp session under xvfb finally established
+  a desktop - AuthenticationPackageName Negotiate, LogonProcessName User32. Earlier
+  authentications with xfreerdp in auth-only mode (18:33:30-18:33:31) produced 4624 events
+  with LogonType 3 instead, and the four failed attempts produced 4625 with LogonType 3. A
+  session held open for less than roughly 60 seconds was cut before the logon completed and
+  left only the Terminal Services connection events behind.
+  This document does not alert on its own; it feeds the correlation below.
+references:
+  - >-
+    https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-4624
+  - https://attack.mitre.org/techniques/T1021/001/
+  - https://attack.mitre.org/techniques/T1078/003/
+  - >-
+    Lab measurement 2026-09-07: 4624 LogonType 10 at 18:35:09, Negotiate / User32, after a full graphical RDP
+    session established from 10.10.10.5
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.lateral-movement
+  - attack.t1021.001
+  - attack.stealth
+  - attack.t1078.003
+logsource:
+  product: windows
+  service: security
+  definition: 'Requires the Logon audit subcategory (success).'
+detection:
+  remote_interactive_logon:
+    EventID: 4624
+    LogonType: 10
+  condition: remote_interactive_logon
+fields:
+  - IpAddress
+  - TargetUserName
+  - TargetLogonId
+  - LogonProcessName
+  - AuthenticationPackageName
+falsepositives:
+  - Every legitimate remote desktop login. On its own this is an inventory event, not a detection.
+level: informational
+---
+title: Terminal Services Session Logon Or Reconnection
+id: 585b0663-197b-4d27-ba17-72556133d2ba
+name: win_terminalservices_lsm_session_logon
+status: experimental
+description: |
+  Base event: the Terminal Services Local Session Manager recorded a session logon
+  (Event ID 21) or a session reconnection (Event ID 22), both of which carry the source
+  network address of the client.
+  Measured in the home lab on 2026-09-07: the graphical RDP session that established at
+  18:35:09 produced the sequence 41 -> 42 -> 21 -> 22 -> 24 in this channel, alongside
+  Event ID 1149 in the RemoteConnectionManager channel carrying Source Network Address
+  10.10.10.5.
+  Correlating with this channel matters because it is what survives when the Security log is
+  cleared: it is a different channel with a different retention, and an attacker who clears
+  Security (Event ID 1102) does not necessarily clear this one.
+references:
+  - https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/remote-desktop-services-events
+  - https://attack.mitre.org/techniques/T1021/001/
+  - >-
+    Lab measurement 2026-09-07: TerminalServices-LocalSessionManager sequence 41 -> 42 -> 21 -> 22 -> 24 at
+    the 18:35:09 session
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.lateral-movement
+  - attack.t1021.001
+logsource:
+  product: windows
+  service: terminalservices-localsessionmanager
+  definition: >-
+    Requires the Microsoft-Windows-TerminalServices-LocalSessionManager/Operational channel to be collected.
+    It is not one of the five channels the lab agent forwards by default, so it must be added to ossec.conf
+    before this rule can fire.
+detection:
+  session_logon_or_reconnect:
+    EventID:
+      - 21
+      - 22
+  condition: session_logon_or_reconnect
+fields:
+  - User
+  - SessionID
+  - Address
+falsepositives:
+  - Every legitimate remote desktop session. Corroboration only.
+level: informational
+---
+title: Interactive RDP Session Established From A Remote Host
+id: 1d202b6e-f001-41aa-a515-cfb5171669f0
+status: experimental
+description: |
+  A successful RemoteInteractive logon (Security 4624, LogonType 10) confirmed by a Terminal
+  Services session logon or reconnection (Event ID 21 or 22) from the same source address.
+  Two channels agreeing that a human-usable desktop session was created on this host.
+  Why the correlation rather than the 4624 alone: the same 2026-09-07 exercise showed that
+  RDP activity is spread across three channels that each tell a partial story - the Security
+  log says a type 10 logon happened but not that it was RDP, RemoteConnectionManager 1149
+  says authentication succeeded but appears for auth-only probes that never create a
+  session, and LocalSessionManager 21/22 is the one that marks a real session with its
+  source address. Requiring 4624 type 10 and LSM 21/22 together is what distinguishes
+  "someone has a desktop on this machine" from "someone tested a credential".
+  On the lab endpoint this fired exactly once, on the session established at 18:35:09 from
+  10.10.10.5, and did not fire on the two auth-only authentications two minutes earlier.
+  Grouping note: the two channels name the client address differently (Security 4624 uses
+  IpAddress, LocalSessionManager uses Address), so the correlation declares an alias. Verify
+  the alias against the field names your parser actually produces - Wazuh exposes them under
+  data.win.eventdata with a lowercase first letter - before assuming the grouping works.
+  Backend caveat, measured on 2026-09-15 with sigma-cli 3.1.0: the ES|QL backend rejects the
+  alias with "Correlation field normalization is not supported by backend", and the
+  opensearch_lucene and lucene backends do not support correlation at all. Replacing the
+  aliases block with "group-by: [Computer]" converts cleanly on ES|QL - verified on a copy -
+  at the cost of grouping by host instead of by client address, which means the analyst has
+  to compare the two addresses by hand during triage.
+references:
+  - https://attack.mitre.org/techniques/T1021/001/
+  - https://attack.mitre.org/techniques/T1078/003/
+  - https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/remote-desktop-services-events
+  - >-
+    Lab measurement 2026-09-07: 4624 LogonType 10 at 18:35:09 plus LocalSessionManager 21 and 22, all from
+    10.10.10.5; Wazuh rule 92657 fired 3 times at level 6 on the RDP activity of this exercise
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+modified: 2026-09-15
+tags:
+  - attack.lateral-movement
+  - attack.t1021.001
+  - attack.stealth
+  - attack.t1078.003
+correlation:
+  type: temporal
+  rules:
+    - win_security_4624_logon_type_10
+    - win_terminalservices_lsm_session_logon
+  aliases:
+    client_address:
+      win_security_4624_logon_type_10: IpAddress
+      win_terminalservices_lsm_session_logon: Address
+  group-by:
+    - client_address
+  timespan: 5m
+falsepositives:
+  - >-
+    Every legitimate administrative or helpdesk RDP session matches this rule by design. It is only useful
+    where RDP is not a normal access path, or scoped with an allowlist of source addresses and accounts.
+    Deployed unscoped on a jump host it produces one alert per login and nothing else.
+  - >-
+    Remote support tools that reconnect to an existing session generate Event ID 22 on their own; a
+    reconnection is not a new logon and will not always be accompanied by a fresh 4624, in which case the
+    correlation does not fire. That is a miss, not a false positive, and is the trade-off of requiring both
+    channels.
+  - >-
+    Not a false positive source in this lab, and worth recording because it was measured: the VirtualBox guest
+    automation used to drive the endpoint produces 4624 events with LogonType 2 and LogonProcessName Advapi,
+    not type 10, so host-side lab tooling never reaches this rule.
+level: medium

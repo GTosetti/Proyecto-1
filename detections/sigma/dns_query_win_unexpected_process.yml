@@ -1,0 +1,70 @@
+title: DNS Query From a Process That Should Not Resolve Names
+id: 9a6c3e58-2f71-4d3b-a5c9-8e04b7f6213d
+status: experimental
+description: |
+    Detects a Sysmon Event ID 22 DNS query issued by a local utility that has no reason to resolve
+    a hostname - discovery binaries (whoami, systeminfo, ipconfig, arp, tasklist, quser, hostname)
+    and simple desktop applications (notepad, calc, mspaint). A name lookup from one of these
+    almost always means the image on disk is not what its filename says, or that something is
+    injected into it.
+    Lab measurement that motivated the rule: Sysmon Event ID 22 is ingested and has zero detection
+    coverage. In the 2026-08-11 B4 exercise, 1 Sysmon 22 event was generated (QueryStatus 9501,
+    no records) and 0 alerts were raised. The DNS channel arrives at the SIEM and no rule reads it.
+    Related measurement from the same exercise (2026-08-11): Sysmon Event ID 1 carries
+    OriginalFileName - it reported PowerShell.EXE for powershell.exe - and that field survives a
+    rename, while Security 4688 has no equivalent. A renamed system binary is therefore
+    undetectable from the Windows Security log alone, which is why the behavioural angle (who
+    resolved a name) is used here instead of trusting the Image path.
+    Timeline warning measured on this endpoint: Sysmon writes Event ID 22 to the channel about
+    3.2 seconds after the query (channel TimeCreated 17:22:40.464 vs the event's own UtcTime
+    17:22:37.222). Sorting by TimeCreated placed the DNS query after a whoami.exe execution that
+    actually happened later. Read UtcTime, and join to the process through ProcessGuid, never
+    through a PID.
+    Tag note: ATT&CK v18 renamed tactic TA0005 from Defense Evasion to Stealth, so the tactic tag
+    reads attack.stealth. Most third-party documentation still uses the old name.
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+    - https://attack.mitre.org/techniques/T1036/003/
+    - https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+    - >-
+      Internal lab measurement, 2026-08-11 B4 exercise (Sysmon EID 22 - 1 event generated, 0 alerts; channel
+      write lag 3.2 s; OriginalFileName present in Sysmon 1 and absent from Security 4688)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.command-and-control
+    - attack.t1071.004
+    - attack.stealth
+    - attack.t1036.003
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    selection:
+        Image|endswith:
+            - '\whoami.exe'
+            - '\systeminfo.exe'
+            - '\ipconfig.exe'
+            - '\arp.exe'
+            - '\quser.exe'
+            - '\tasklist.exe'
+            - '\hostname.exe'
+            - '\notepad.exe'
+            - '\calc.exe'
+            - '\mspaint.exe'
+            - '\nltest.exe'
+    condition: selection
+falsepositives:
+    - nltest.exe legitimately resolves domain controller records. This lab is currently a
+      workgroup - the planned domain controller DC01 does not exist yet - so nltest.exe is listed
+      here on purpose, and the entry must be removed or scoped to non-domain hosts once the
+      endpoint joins a domain. Flagged here rather than silently omitted because it is a known
+      future false positive, not a surprise.
+    - notepad.exe can resolve a name when a file is opened from a UNC path typed as a hostname,
+      and mspaint.exe can do the same. Both are rare on a workstation and worth a look when they
+      happen.
+    - Any of these images running from a directory other than System32 is the interesting case;
+      if the environment has a legitimate third-party binary with one of these filenames, exclude
+      it by full Image path, never by filename alone, or the rule becomes blind to exactly the
+      rename it is meant to catch.
+level: medium

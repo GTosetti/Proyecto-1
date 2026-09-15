@@ -1,0 +1,74 @@
+title: Scripting Interpreter Making an Outbound Connection Outside RFC1918
+id: 5e2a7b13-9d4c-4a08-8f27-3b6e1c9d40a5
+status: experimental
+description: |
+    Detects a Sysmon Event ID 3 network connection initiated by a command shell or scripting
+    interpreter towards a destination that is not in a private, loopback, link-local or multicast
+    range. An interpreter talking directly to a routable address is the shape of a downloader or
+    of a command-and-control beacon.
+    Lab measurement that motivated the rule: Sysmon Event ID 3 is ingested and has zero detection
+    coverage. In the 2026-08-11 B4 exercise, 1 Sysmon 3 event was generated and 0 alerts were
+    raised. In the 2026-09-07 exercise, a service scan from the attacker VM left 2 Sysmon 3
+    events (inbound to 10.10.10.20:3389 from 10.10.10.5, Initiated=false) and again 0 alerts.
+    The channel reaches the SIEM and nothing looks at it; this rule closes a gap that was
+    measured rather than assumed.
+    Timeline warning measured on this endpoint (2026-08-11): Sysmon writes Event ID 3 to the
+    channel about 4 seconds after the connection happens (channel TimeCreated 17:22:41.163 vs the
+    event's own UtcTime 17:22:37.162). Any timeline or correlation window built on this rule must
+    read the event's UtcTime field, not the channel timestamp. The Wazuh manager's @timestamp is
+    a third clock, measured about 1.8 s behind the endpoint.
+references:
+    - https://attack.mitre.org/techniques/T1059/001/
+    - https://attack.mitre.org/techniques/T1071/001/
+    - https://attack.mitre.org/techniques/T1105/
+    - https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+    - >-
+      Internal lab measurement, 2026-08-11 B4 exercise (Sysmon EID 3 - 1 event generated, 0 alerts) and
+      2026-09-07 attack exercise (2 inbound Sysmon EID 3 events, 0 alerts)
+author: Proyecto-1 home SOC lab
+date: 2026-09-15
+tags:
+    - attack.command-and-control
+    - attack.t1071.001
+    - attack.execution
+    - attack.t1059.001
+logsource:
+    category: network_connection
+    product: windows
+detection:
+    selection:
+        Initiated: 'true'
+        Image|endswith:
+            - '\powershell.exe'
+            - '\pwsh.exe'
+            - '\cmd.exe'
+            - '\wscript.exe'
+            - '\cscript.exe'
+            - '\mshta.exe'
+            - '\wmic.exe'
+    filter_internal:
+        DestinationIp|cidr:
+            - '10.0.0.0/8'
+            - '172.16.0.0/12'
+            - '192.168.0.0/16'
+            - '127.0.0.0/8'
+            - '169.254.0.0/16'
+            - '224.0.0.0/4'
+            - '::1/128'
+            - 'fe80::/10'
+            - 'fc00::/7'
+    condition: selection and not filter_internal
+falsepositives:
+    - PowerShell reaching a package repository (Install-Module, Update-Help) or any script that
+      calls a vendor API over HTTPS. Exclude by DestinationHostname once the legitimate
+      destinations of the environment are known, not by removing the interpreter from the list.
+    - Telemetry and management agents that wrap their network calls in cmd.exe or PowerShell.
+    - Split-horizon or cloud-hosted internal services that live outside RFC1918, which this rule
+      would treat as external. In this lab every asset is inside 10.10.10.0/24, so the assumption
+      holds here and would need re-checking anywhere else.
+    - The rule only sees outbound connections (Initiated=true). The measured inbound residue of a
+      port scan (Initiated=false) is deliberately out of scope here; a host agent has almost no
+      network visibility anyway - a 65,535-port SYN scan lasting 88 seconds produced 0
+      attributable alerts on this endpoint, which is an architecture gap for a network sensor,
+      not something another Sysmon rule can fix.
+level: medium
