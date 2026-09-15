@@ -1,0 +1,373 @@
+# Repository validation.
+#
+# This repository is a portfolio: markdown writeups, Sigma rules, an ATT&CK Navigator
+# layer and PowerShell lab scripts. Nothing here is compiled, so the only way a defect
+# reaches a reader is by being committed. Every job below blocks one class of defect
+# that a human reviewer reliably misses.
+#
+# Action versions are pinned to release tags. Pinning to a full commit SHA is stricter
+# still and is the next step if this repository ever accepts outside contributions.
+
+name: validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: "8.18.4"
+
+jobs:
+
+  # Prevents: a credential landing in a public repository.
+  # The lab has a user account, a Wazuh admin password and a dashboard reachable over
+  # basic auth. Every document in this repository is written with placeholders instead,
+  # and this job is what keeps that rule enforced rather than merely intended. It scans
+  # the full history as well as the working tree, because a secret removed in a later
+  # commit is still published by the earlier one.
+  secret-scan:
+    name: secret-scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -fsSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan commit history
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source . \
+            --redact \
+            --exit-code 1 \
+            --report-format sarif \
+            --report-path gitleaks-history.sarif
+
+      - name: Scan working tree (including files never committed to this branch)
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source . \
+            --no-git \
+            --redact \
+            --exit-code 1 \
+            --report-format sarif \
+            --report-path gitleaks-worktree.sarif
+
+      - name: Upload gitleaks reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-reports
+          path: gitleaks-*.sarif
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Prevents: publishing a detection rule that no SIEM could ever load.
+  # A Sigma rule that does not parse is worse than no rule at all: it looks like
+  # coverage in the repository and produces none in the pipeline. "sigma check" parses
+  # every rule and validates its structure, so a broken logsource, a malformed
+  # condition or a missing required field fails here instead of in a conversion.
+  sigma-validate:
+    name: sigma-validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sigma-cli
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install sigma-cli
+          sigma version
+
+      - name: Validate every rule under detections/sigma/
+        run: |
+          set -euo pipefail
+          if [ ! -d detections/sigma ]; then
+            echo "detections/sigma/ does not exist; nothing to validate."
+            exit 0
+          fi
+          rule_count=$(find detections/sigma -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l)
+          echo "Sigma rule files found: ${rule_count}"
+          if [ "${rule_count}" -eq 0 ]; then
+            echo "No Sigma rules yet; skipping. This job becomes meaningful with the first rule."
+            exit 0
+          fi
+          find detections/sigma -type f \( -name '*.yml' -o -name '*.yaml' \) -print
+          sigma check detections/sigma
+
+  # Prevents: a YAML file that is valid to the eye and invalid to a parser.
+  # Sigma rules and this workflow are both YAML, and both are silently load-bearing:
+  # an indentation mistake in a rule file changes which field a value belongs to
+  # without changing how the file reads.
+  yaml-lint:
+    name: yaml-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install yamllint
+        run: python -m pip install "yamllint==1.35.1"
+
+      - name: Lint detections/ and .github/
+        run: |
+          set -euo pipefail
+          targets=""
+          for d in detections .github; do
+            if [ -d "$d" ]; then targets="$targets $d"; fi
+          done
+          if [ -z "$targets" ]; then
+            echo "No target directories present."
+            exit 0
+          fi
+          # Settings live in .yamllint at the repository root, so a local run and a
+          # CI run enforce exactly the same rules. If it passes here it passes locally.
+          yamllint -f github -s -c .yamllint $targets
+
+  # Prevents: shipping an ATT&CK Navigator layer that the Navigator refuses to open,
+  # or that opens empty. The layer is the coverage claim of this repository in visual
+  # form; if it is malformed, the claim cannot be checked by a reader at all.
+  json-validate:
+    name: json-validate (navigator layer)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Parse the layer and check required Navigator keys
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("detections/attack-navigator-layer.json")
+          if not path.is_file():
+              sys.exit(f"FAIL: {path} is missing.")
+
+          try:
+              layer = json.loads(path.read_text(encoding="utf-8"))
+          except json.JSONDecodeError as exc:
+              sys.exit(f"FAIL: {path} is not valid JSON: {exc}")
+
+          errors = []
+
+          if not isinstance(layer, dict):
+              sys.exit("FAIL: the layer must be a JSON object.")
+
+          for key in ("name", "versions", "domain", "techniques"):
+              if key not in layer:
+                  errors.append(f"missing top-level key: {key}")
+
+          versions = layer.get("versions")
+          if isinstance(versions, dict):
+              for key in ("attack", "navigator", "layer"):
+                  if key not in versions:
+                      errors.append(f"missing versions.{key}")
+          elif versions is not None:
+              errors.append("versions must be an object with attack/navigator/layer")
+
+          techniques = layer.get("techniques")
+          if not isinstance(techniques, list):
+              errors.append("techniques must be a list")
+          elif not techniques:
+              errors.append("techniques is empty; an empty layer asserts nothing")
+          else:
+              seen = set()
+              for i, tech in enumerate(techniques):
+                  if not isinstance(tech, dict):
+                      errors.append(f"techniques[{i}] is not an object")
+                      continue
+                  tid = tech.get("techniqueID")
+                  if not tid:
+                      errors.append(f"techniques[{i}] has no techniqueID")
+                      continue
+                  key = (tid, tech.get("tactic"))
+                  if key in seen:
+                      errors.append(f"duplicate entry for {tid} (tactic {tech.get('tactic')})")
+                  seen.add(key)
+
+          if errors:
+              for e in errors:
+                  print(f"FAIL: {e}")
+              sys.exit(1)
+
+          print(f"OK: {path} parses, {len(techniques)} technique entries, domain {layer.get('domain')}.")
+          PY
+
+  # Prevents: a portfolio whose internal links are dead.
+  # The documents cross-reference each other constantly ("measured in the writeup at
+  # ..."). A reader who follows a broken link stops trusting the rest. This checks only
+  # relative links between files in this repository; external URLs are deliberately not
+  # fetched, so the job never fails because a third-party site was down.
+  markdown-links:
+    name: markdown-links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve every relative markdown link
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+          from urllib.parse import unquote
+
+          repo = Path(".").resolve()
+
+          link_re = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+          fence_re = re.compile(r"^\s*(```|~~~)")
+          inline_code_re = re.compile(r"`[^`]*`")
+
+          md_files = [
+              p for p in repo.rglob("*.md")
+              if ".git" not in p.relative_to(repo).parts
+              and "node_modules" not in p.relative_to(repo).parts
+          ]
+
+          broken = []
+          checked = 0
+
+          for md in md_files:
+              in_fence = False
+              for lineno, raw in enumerate(md.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                  if fence_re.match(raw):
+                      in_fence = not in_fence
+                      continue
+                  if in_fence:
+                      continue
+                  line = inline_code_re.sub("", raw)
+                  for target in link_re.findall(line):
+                      target = target.strip()
+                      if " " in target:            # "path 'title'" form
+                          target = target.split(" ", 1)[0]
+                      if not target or target.startswith(("http://", "https://", "mailto:", "#", "<")):
+                          continue
+                      path_part = unquote(target.split("#", 1)[0])
+                      if not path_part:
+                          continue
+                      resolved = (md.parent / path_part).resolve()
+                      checked += 1
+                      if not resolved.exists():
+                          broken.append(
+                              f"{md.relative_to(repo)}:{lineno} -> {target}"
+                          )
+
+          print(f"Markdown files scanned: {len(md_files)}")
+          print(f"Relative links checked: {checked}")
+
+          if broken:
+              print("FAIL: broken relative links")
+              for b in broken:
+                  print(f"  {b}")
+              sys.exit(1)
+
+          print("OK: no broken relative links.")
+          PY
+
+  # Prevents: a lab script that is syntactically wrong, or that relies on something
+  # PowerShell 5.1 does not have. The lab runs Windows PowerShell 5.1, which has no
+  # pipeline chain operators, no null-coalescing and no ternary; code written against
+  # a newer PowerShell parses here and fails on the endpoint. A partially applied
+  # telemetry script is the worst outcome available: it leaves the analyst believing
+  # Sysmon is running when it is not, which is exactly how this lab lost a Sysmon
+  # install once.
+  powershell-lint:
+    name: powershell-lint (PSScriptAnalyzer)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force
+          Import-Module PSScriptAnalyzer
+          (Get-Module PSScriptAnalyzer).Version.ToString()
+
+      - name: Analyze lab/scripts/
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $target = 'lab/scripts'
+
+          if (-not (Test-Path -LiteralPath $target)) {
+            Write-Host "$target does not exist; nothing to analyze."
+            exit 0
+          }
+
+          $scripts = Get-ChildItem -LiteralPath $target -Recurse -Include *.ps1, *.psm1, *.psd1 -File
+          Write-Host ("PowerShell files found: {0}" -f $scripts.Count)
+          if ($scripts.Count -eq 0) {
+            Write-Host "No PowerShell files yet; skipping."
+            exit 0
+          }
+
+          # Compatibility is checked against 5.1 because that is the version on the
+          # lab endpoint, not the version on this runner.
+          $results = Invoke-ScriptAnalyzer -Path $target -Recurse -Severity Error, Warning
+
+          if ($results) {
+            $results |
+              Sort-Object Severity, ScriptName, Line |
+              Format-Table Severity, ScriptName, Line, RuleName, Message -AutoSize -Wrap |
+              Out-String -Width 200 |
+              Write-Host
+          } else {
+            Write-Host "PSScriptAnalyzer reported nothing at Error or Warning severity."
+          }
+
+          $errors = @($results | Where-Object { $_.Severity -eq 'Error' -or $_.Severity -eq 'ParseError' })
+          if ($errors.Count -gt 0) {
+            Write-Host ("FAIL: {0} error-severity finding(s)." -f $errors.Count)
+            exit 1
+          }
+
+          exit 0

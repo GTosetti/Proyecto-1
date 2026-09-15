@@ -1,0 +1,17 @@
+# Lint settings shared by the CI job and local runs, so "it passed on my machine"
+# and "it passed in CI" mean the same thing.
+extends: default
+
+rules:
+  # Sigma descriptions and falsepositives are prose; 120 is the practical ceiling.
+  line-length:
+    max: 120
+    allow-non-breakable-words: true
+  # Sigma rules are plain documents; a leading --- is only required to separate
+  # a correlation rule from its base rule, which some rules here legitimately do.
+  document-start: disable
+  # GitHub Actions uses `on:`, which YAML 1.1 readers flag as a boolean key.
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
