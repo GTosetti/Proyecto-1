@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Secrets — never commit. This repo is public.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.token
+*token*.txt
+*secret*
+*credential*
+*.pem
+*.key
+*.pfx
+*.p12
+inventario.md
+inventory.md
+
+# Raw capture / evidence dumps (may embed session data, cookies, internal IPs)
+*_json_requests.json
+*.har
+*.pcap
+*.pcapng
+raw-evidence/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Build / tooling
+node_modules/
+.sigma-cache/
