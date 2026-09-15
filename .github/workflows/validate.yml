@@ -33,6 +33,15 @@ jobs:
   # and this job is what keeps that rule enforced rather than merely intended. It scans
   # the full history as well as the working tree, because a secret removed in a later
   # commit is still published by the earlier one.
+  #
+  # The stock gitleaks ruleset does not detect any of those three. It matches
+  # provider-issued credentials plus a generic-api-key rule gated on entropy, and the
+  # lab password is nine low-entropy characters. That is why --config is passed:
+  # .gitleaks.toml at the repository root carries the rules that match this lab's own
+  # secret shapes - a password on a command line, user%password, basic-auth pairs, the
+  # dated password literal, a Windows profile path with a real account name in it - and
+  # allowlists the <PLACEHOLDER> form the documents are written in. Without that file
+  # this job catches GitHub tokens and nothing that this repository could plausibly leak.
   secret-scan:
     name: secret-scan (gitleaks)
     runs-on: ubuntu-latest
@@ -54,8 +63,13 @@ jobs:
       - name: Scan commit history
         run: |
           set -euo pipefail
+          if [ ! -f .gitleaks.toml ]; then
+            echo "FAIL: .gitleaks.toml is missing; the lab's own rules would not be applied."
+            exit 1
+          fi
           gitleaks detect \
             --source . \
+            --config .gitleaks.toml \
             --redact \
             --exit-code 1 \
             --report-format sarif \
@@ -66,6 +80,7 @@ jobs:
           set -euo pipefail
           gitleaks detect \
             --source . \
+            --config .gitleaks.toml \
             --no-git \
             --redact \
             --exit-code 1 \
@@ -86,6 +101,10 @@ jobs:
   # coverage in the repository and produces none in the pipeline. "sigma check" parses
   # every rule and validates its structure, so a broken logsource, a malformed
   # condition or a missing required field fails here instead of in a conversion.
+  #
+  # -i (--fail-on-issues) is not optional here. By default "sigma check" prints
+  # validation issues and still exits 0, so a misspelled ATT&CK tag - which is the
+  # coverage claim of every rule in this folder - would scroll past a green tick.
   sigma-validate:
     name: sigma-validate
     runs-on: ubuntu-latest
@@ -112,14 +131,24 @@ jobs:
             echo "detections/sigma/ does not exist; nothing to validate."
             exit 0
           fi
-          rule_count=$(find detections/sigma -type f \( -name '*.yml' -o -name '*.yaml' \) | wc -l)
+          # Count only what "sigma check" actually reads. It recurses on *.yml, so a
+          # rule saved as *.yaml would be counted, printed as if it were about to be
+          # validated, and then skipped in silence - a larger number than was checked.
+          stray=$(find detections/sigma -type f -name '*.yaml' | wc -l)
+          if [ "${stray}" -ne 0 ]; then
+            echo "FAIL: ${stray} file(s) use the .yaml extension, which sigma check does not read:"
+            find detections/sigma -type f -name '*.yaml' -print
+            echo "Rename them to .yml so the count and the check agree."
+            exit 1
+          fi
+          rule_count=$(find detections/sigma -type f -name '*.yml' | wc -l)
           echo "Sigma rule files found: ${rule_count}"
           if [ "${rule_count}" -eq 0 ]; then
             echo "No Sigma rules yet; skipping. This job becomes meaningful with the first rule."
             exit 0
           fi
-          find detections/sigma -type f \( -name '*.yml' -o -name '*.yaml' \) -print
-          sigma check detections/sigma
+          find detections/sigma -type f -name '*.yml' -print
+          sigma check -i detections/sigma
 
   # Prevents: a YAML file that is valid to the eye and invalid to a parser.
   # Sigma rules and this workflow are both YAML, and both are silently load-bearing:
@@ -175,8 +204,15 @@ jobs:
           set -euo pipefail
           python - <<'PY'
           import json
+          import re
           import sys
           from pathlib import Path
+
+          # Shape only. This cannot tell you that a well-formed ID was renumbered in a
+          # later ATT&CK release - that needs the technique list for the version the
+          # layer declares - but it does catch the typo that silently drops a cell
+          # from the matrix, which is the failure the layer cannot show you.
+          TECHNIQUE_ID = re.compile(r"^T\d{4}(\.\d{3})?$")
 
           path = Path("detections/attack-navigator-layer.json")
           if not path.is_file():
@@ -219,6 +255,11 @@ jobs:
                   if not tid:
                       errors.append(f"techniques[{i}] has no techniqueID")
                       continue
+                  if not TECHNIQUE_ID.match(str(tid)):
+                      errors.append(
+                          f"techniques[{i}] techniqueID {tid!r} is not of the form "
+                          "T#### or T####.###; the Navigator will not place it"
+                      )
                   key = (tid, tech.get("tactic"))
                   if key in seen:
                       errors.append(f"duplicate entry for {tid} (tactic {tech.get('tactic')})")
@@ -317,6 +358,18 @@ jobs:
   # telemetry script is the worst outcome available: it leaves the analyst believing
   # Sysmon is running when it is not, which is exactly how this lab lost a Sysmon
   # install once.
+  #
+  # Two details make the difference between this job working and this job looking
+  # like it works:
+  #   - ParseError has to be named in -Severity. It is a severity of its own, so
+  #     "-Severity Error, Warning" filters out the diagnostics for a file that does
+  #     not parse at all: the job then reports nothing and exits 0, which is the
+  #     opposite of what the paragraph above claims.
+  #   - The 5.1 check is a configured rule, not a default one. This step runs under
+  #     pwsh 7, whose parser accepts &&, ?? and ternaries, so nothing here notices
+  #     5.1-incompatible syntax unless PSUseCompatibleSyntax is enabled with
+  #     TargetVersions. That is what PSScriptAnalyzerSettings.psd1 does, and it is
+  #     also where PSAvoidUsingWriteHost is excluded, with the reason written out.
   powershell-lint:
     name: powershell-lint (PSScriptAnalyzer)
     runs-on: windows-latest
@@ -350,9 +403,20 @@ jobs:
             exit 0
           }
 
+          $settings = 'PSScriptAnalyzerSettings.psd1'
+          if (-not (Test-Path -LiteralPath $settings)) {
+            Write-Host "FAIL: $settings is missing. The 5.1 compatibility rule only runs when it is present."
+            exit 1
+          }
+
           # Compatibility is checked against 5.1 because that is the version on the
-          # lab endpoint, not the version on this runner.
-          $results = Invoke-ScriptAnalyzer -Path $target -Recurse -Severity Error, Warning
+          # lab endpoint, not the version on this runner. That check comes from
+          # $settings; without it this step would only run the default rules.
+          # ParseError is listed explicitly: it is a severity of its own, and a file
+          # that does not parse produces nothing without it.
+          $results = Invoke-ScriptAnalyzer -Path $target -Recurse `
+                       -Settings $settings `
+                       -Severity ParseError, Error, Warning
 
           if ($results) {
             $results |
@@ -361,7 +425,7 @@ jobs:
               Out-String -Width 200 |
               Write-Host
           } else {
-            Write-Host "PSScriptAnalyzer reported nothing at Error or Warning severity."
+            Write-Host "PSScriptAnalyzer reported nothing at ParseError, Error or Warning severity."
           }
 
           $errors = @($results | Where-Object { $_.Severity -eq 'Error' -or $_.Severity -eq 'ParseError' })

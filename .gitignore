@@ -6,8 +6,19 @@
 !.env.example
 *.token
 *token*.txt
-*secret*
-*credential*
+#
+# Narrow on purpose. `*secret*` and `*credential*` were here first and they are
+# too wide for a detection repository: Credential Access is a live subject in
+# detections/ and docs/, and the Sigma naming convention this repo follows makes
+# proc_creation_win_credential_dumping.yml the natural name for the next rule.
+# git would have refused to add it, with no error anyone would notice. The
+# patterns below still block every shape a real secret is stored in, and leave
+# the tactic vocabulary free.
+secrets.*
+*.secret
+.secrets/
+*credentials.json
+*credential*.env
 *.pem
 *.key
 *.pfx

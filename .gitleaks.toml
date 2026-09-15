@@ -1,0 +1,144 @@
+# gitleaks configuration for this repository.
+#
+# WHY THIS FILE EXISTS
+#   The stock gitleaks ruleset matches provider-issued credentials: AWS keys,
+#   GitHub tokens, Slack tokens, PEM private key blocks, plus a generic-api-key
+#   rule gated on a keyword next to a high-entropy value. None of that describes
+#   the secrets this repository could actually leak. The lab has a local account
+#   password, a Wazuh admin password used over basic auth, and a host filesystem
+#   path that carries a real Windows account name. All three are short, low
+#   entropy and would pass a stock scan untouched.
+#
+#   Without these rules the secret-scan job in .github/workflows/validate.yml
+#   could only claim to catch provider tokens. The rules below are what make its
+#   comment true.
+#
+# HOW THE REPOSITORY WRITES SECRETS
+#   Every credential in this repository is written as an angle-bracket
+#   placeholder: <LAB_USER>, <LAB_PASSWORD>, <WAZUH_ADMIN_PASSWORD>, <REDACTED>,
+#   <user>, <fake-pass>. The allowlist below exempts that form, so the
+#   convention and the scanner agree. Anything that is not a placeholder is a
+#   finding.
+#
+# TESTING A CHANGE
+#   gitleaks detect --source . --config .gitleaks.toml --no-git --verbose
+#   Add a line with a real-looking credential first and confirm it is caught
+#   before trusting a green run.
+
+title = "Proyecto-1 lab secret rules"
+
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Repository-wide allowlist
+# ---------------------------------------------------------------------------
+# The placeholder form is the repository's documented convention, so a match
+# that consists of a placeholder is not a leak. Note the trade-off: a line
+# carrying a placeholder AND a real secret would be exempted. That is accepted
+# deliberately, because the alternative - no placeholder exemption - produces a
+# scanner that fails on every documented command and is therefore ignored.
+[allowlist]
+description = "Documented placeholders and the scanner's own configuration."
+regexTarget = "match"
+regexes = [
+  '''<[A-Za-z][A-Za-z0-9 ._-]{0,40}>''',
+  '''\{\{[^}]{1,40}\}\}''',
+  '''\$\{?[A-Za-z_][A-Za-z0-9_]*''',
+  '''\.\.\.''',
+]
+paths = [
+  '''^\.gitleaks\.toml$''',
+]
+
+# ---------------------------------------------------------------------------
+# 1 - A password passed on a command line
+# ---------------------------------------------------------------------------
+# Covers the three forms this lab actually uses: xfreerdp /p:, VBoxManage
+# guestcontrol --password, and any key=value or key: value pair whose key is
+# "password". \b in front of "password" keeps it from firing on a Sigma field
+# name such as failed_logon_wrong_password:.
+[[rules]]
+id = "lab-password-on-command-line"
+description = "Password supplied as a command-line flag or key/value pair"
+regex = '''(?i)(?:--password|/p:|/pass:|\bpass(?:word)?\s*[:=])\s*["']?([^\s"'\n]{6,80})'''
+secretGroup = 1
+tags = ["lab", "password"]
+
+# ---------------------------------------------------------------------------
+# 2 - user%password, the SMB tooling form
+# ---------------------------------------------------------------------------
+# smbclient -L //host -U user%password and netexec smb host -u user -p password.
+# The percent form is the one that ends up pasted into a writeup verbatim.
+[[rules]]
+id = "smb-user-password-pair"
+description = "SMB-style user%password pair (smbclient, netexec)"
+regex = '''(?i)-U\s+["']?([A-Za-z0-9._-]{2,64}%[^\s"'\n]{4,80})'''
+secretGroup = 1
+tags = ["lab", "password", "smb"]
+
+# ---------------------------------------------------------------------------
+# 3 - Basic auth, which is how every query in this repository reaches Wazuh
+# ---------------------------------------------------------------------------
+# curl -k -u admin:<password> against the dashboard console proxy on 8443. This
+# is the single most-copied command in the repository, so it is the most likely
+# place for a real password to be pasted by accident.
+[[rules]]
+id = "basic-auth-credential-pair"
+description = "user:password pair passed to curl or a similar client"
+regex = '''(?i)(?:-u|--user)\s+["']?([A-Za-z0-9._-]{2,64}:[^\s"'@\n]{4,80})'''
+secretGroup = 1
+tags = ["lab", "password", "basic-auth"]
+
+# ---------------------------------------------------------------------------
+# 4 - Credentials embedded in a URL
+# ---------------------------------------------------------------------------
+[[rules]]
+id = "url-embedded-credential"
+description = "scheme://user:password@host"
+regex = '''(?i)[a-z][a-z0-9+.-]{1,20}://([a-z0-9._%-]{2,64}:[^\s/@"'\n]{4,80})@'''
+secretGroup = 1
+tags = ["lab", "password", "url"]
+
+# ---------------------------------------------------------------------------
+# 5 - The shape of this lab's own password
+# ---------------------------------------------------------------------------
+# A word, a dash or underscore, a four-digit year, a punctuation character. That
+# is the pattern the lab account uses, and stock gitleaks cannot see it: it is
+# nine characters of low entropy, well under the generic-api-key entropy floor.
+# This rule exists so the password can never be committed bare, in prose, with
+# no flag in front of it.
+[[rules]]
+id = "dated-lab-password-literal"
+description = "Word-year-symbol password literal (the shape this lab's accounts use)"
+regex = '''\b[A-Z][A-Za-z]{2,11}[-_]20[0-9]{2}[!@#$%^&*?][A-Za-z0-9!@#$%^&*?]{0,24}'''
+tags = ["lab", "password"]
+
+# ---------------------------------------------------------------------------
+# 6 - A Windows profile path, which carries a real account name
+# ---------------------------------------------------------------------------
+# Not a credential, but it identifies the host account and reveals the private
+# directory this portfolio is assembled in. README.md states that the lab
+# account is written as <LAB_USER> throughout; this rule is what enforces that
+# statement rather than trusting it. Placeholder forms such as
+# C:\Users\<YOU>\ISOs do not match, because "<" is not in the character class.
+[[rules]]
+id = "windows-user-profile-path"
+description = "Host filesystem path containing a real Windows account name"
+regex = '''(?i)[a-z]:\\+users\\+([a-z0-9._ -]{2,64})'''
+secretGroup = 1
+tags = ["opsec", "host-identity"]
+
+# ---------------------------------------------------------------------------
+# 7 - An account name in front of a host
+# ---------------------------------------------------------------------------
+# The lab guide is built around an ssh command to the forwarded SIEM port, and
+# written out in full that line publishes the account name. The guide writes it
+# as ssh <LAB_USER>@127.0.0.1 -p 2222, which the allowlist exempts; any real
+# account name in that position is a finding.
+[[rules]]
+id = "account-name-before-host"
+description = "user@host in an ssh, scp or rsync command"
+regex = '''(?i)\b(?:ssh|scp|rsync|sftp)\s[^\n]{0,60}?([a-z][a-z0-9._-]{1,31}@[a-z0-9.\[-]{1,})'''
+secretGroup = 1
+tags = ["opsec", "host-identity"]
