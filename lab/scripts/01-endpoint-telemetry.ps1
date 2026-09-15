@@ -21,7 +21,8 @@
       3. Command line inside 4688 + PowerShell 4103/4104 logging
       4. Event log channel size raised to 256 MB
       5. Firewall: inbound ICMP, SMB and RDP (deliberate - see note)
-      6. Sysmon with the SwiftOnSecurity configuration
+      6. Sysmon with the SwiftOnSecurity configuration - SHA256 of both
+         downloads printed, and enforced if you supply the expected values
       7. Verification of its own work
 
     RUN AS ADMINISTRATOR, once, on the endpoint:
@@ -33,6 +34,15 @@
     original build - steps 1-5 applied and Sysmon was never installed, with no
     obvious error. Use Start-Transcript if you need a log of the run.
 
+    The same rule applies INSIDE this file, which is why no native call below is
+    written `auditpol ... 2>&1` or `wevtutil ... 2>&1 | Out-Null`. Measured on
+    5.1: merging a native command's stderr into the pipeline throws
+    NativeCommandError under $ErrorActionPreference = 'Stop' whether the merge is
+    a Tee-Object, an assignment or an Out-Null. Earlier versions of steps 2, 4
+    and 6 did exactly that, which made the per-item warnings below unreachable
+    and could abort the run before Sysmon was installed. Exit codes are checked
+    instead; stderr is left to go to the console, where it is readable.
+
     NOTE ON THE FIREWALL RULES
       Opening 445 and 3389 inbound is not "turning off security". A real
       corporate endpoint has both open to the internal network. Closed, there is
@@ -42,7 +52,21 @@
     NOTE ON LANGUAGE
       auditpol addresses subcategories by their LOCALISED display name. The
       names below are the English ones, which is why this lab installs Windows
-      in English. On a non-English install this step fails silently per item.
+      in English. On a non-English install auditpol rejects every one of them
+      (exit code 87). Step 2 prints a warning per item and carries on, so the
+      run reaches the end with the audit policy unchanged: read the warnings,
+      and do not take "the script finished" as "the endpoint is audited". Step 7
+      is what settles it.
+
+    WHAT IS DELIBERATELY NOT AUDITED
+      Three subcategories that a production endpoint would often have on are
+      left off here, for volume: Filtering Platform Connection (5156/5157),
+      Filtering Platform Packet Drop (5152/5153) and Object Access / File Share
+      (5140/5145). They are the reason a port scan and a share enumeration leave
+      no host-side record in this lab. That is a configuration choice made here,
+      not a limit of Windows. Audit Credential Validation (4776) is also off; it
+      is the cheapest addition if NTLM authentication against local accounts
+      becomes a subject.
 
     No credential appears in this file.
 #>
@@ -59,7 +83,19 @@ param(
     [int]      $ChannelSizeBytes = 268435456,
 
     [string]   $SysmonDir  = 'C:\Sysmon',
+
+    # Branch tip by default, which means this URL does not name a fixed file:
+    # `master` moves, so two runs of this script on different days can install
+    # two different rule sets. Replace `master` with a full commit SHA to pin it,
+    # and pass the matching hash in -SysmonConfigSha256. See step 6.
     [string]   $SysmonConfigUrl = 'https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml',
+
+    # Expected SHA256 of the two downloads. Empty by default because no hash has
+    # been recorded for this build; when empty the script prints what it got and
+    # says plainly that the download was not verified. Supply them and a
+    # mismatch aborts the run.
+    [string]   $SysmonZipSha256    = '',
+    [string]   $SysmonConfigSha256 = '',
 
     [switch]   $SkipNetwork,
     [switch]   $SkipRdp
@@ -128,16 +164,29 @@ $auditSubcategories = @(
     @{ Name = 'Logon';                     Success = 'enable'; Failure = 'enable'  }  # 4624 / 4625
     @{ Name = 'Logoff';                    Success = 'enable'; Failure = 'disable' }  # 4634 / 4647
     @{ Name = 'Special Logon';             Success = 'enable'; Failure = 'enable'  }  # 4672
-    @{ Name = 'Account Lockout';           Success = 'enable'; Failure = 'enable'  }  # 4740
-    @{ Name = 'User Account Management';   Success = 'enable'; Failure = 'enable'  }  # 4720 / 4726 / 4738
+    @{ Name = 'Account Lockout';           Success = 'enable'; Failure = 'enable'  }  # 4625 against an already-locked account
+    @{ Name = 'User Account Management';   Success = 'enable'; Failure = 'enable'  }  # 4720 / 4726 / 4738 / 4740
     @{ Name = 'Security Group Management'; Success = 'enable'; Failure = 'enable'  }  # 4732 / 4733
     @{ Name = 'Audit Policy Change';       Success = 'enable'; Failure = 'enable'  }  # 4719
     @{ Name = 'Security System Extension'; Success = 'enable'; Failure = 'enable'  }  # 4697 (service installed)
 )
 
+# Account Lockout is the subcategory people mislabel. It does not write 4740 -
+# that comes from User Account Management, also enabled above. What Account
+# Lockout produces is a 4625 for an attempt against an account that is already
+# locked out, which carries Status 0xC0000234.
+#
+# No `2>&1` here, deliberately: see the note in the header. Merging auditpol's
+# stderr into the pipeline under $ErrorActionPreference = 'Stop' throws, which
+# would make the Write-Warn below unreachable and abort the run on the first
+# rejected name.
 foreach ($sub in $auditSubcategories) {
-    $out = auditpol /set /subcategory:"$($sub.Name)" /success:$($sub.Success) /failure:$($sub.Failure) 2>&1
-    if ($LASTEXITCODE -eq 0) { Write-Ok $sub.Name } else { Write-Warn "$($sub.Name) -> $out" }
+    auditpol /set /subcategory:"$($sub.Name)" /success:$($sub.Success) /failure:$($sub.Failure) | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok $sub.Name
+    } else {
+        Write-Warn "$($sub.Name) -> auditpol exit code $LASTEXITCODE (87 = name not recognised; check the display language)"
+    }
 }
 
 # ===========================================================================
@@ -183,8 +232,8 @@ $channels = @(
     'Microsoft-Windows-PowerShell/Operational'
 )
 foreach ($channel in $channels) {
-    wevtutil sl "$channel" /ms:$ChannelSizeBytes 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { Write-Ok "$channel resized" } else { Write-Warn "$channel could not be resized" }
+    wevtutil sl "$channel" /ms:$ChannelSizeBytes | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Ok "$channel resized" } else { Write-Warn "$channel could not be resized (wevtutil exit code $LASTEXITCODE)" }
 }
 
 # ===========================================================================
@@ -222,12 +271,43 @@ Write-Step '6/7  Sysmon + SwiftOnSecurity configuration'
 
 New-Item -ItemType Directory -Path $SysmonDir -Force | Out-Null
 
+# The Windows ISO for this lab was hash-verified before it was booted, and the
+# Sysmon configuration decides what the whole detection layer can see - so it is
+# the file that least deserves to be the unverified one. Two things are wrong
+# with fetching it as written: Sysinternals publishes no SHA256 for Sysmon.zip,
+# and the configuration URL points at a branch tip that moves. Neither is fixed
+# by pretending otherwise. What this does instead: always compute and print the
+# hash, abort if an expected hash was supplied and does not match, and say out
+# loud when nothing was verified.
+function Assert-Sha256 {
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [string] $Expected,
+        [Parameter(Mandatory)] [string] $Label
+    )
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+    if ($Expected) {
+        if ($actual -ne $Expected.ToUpperInvariant()) {
+            throw "$Label SHA256 mismatch. Expected $Expected, got $actual. Refusing to continue."
+        }
+        Write-Ok "$Label SHA256 verified: $actual"
+    } else {
+        Write-Warn "$Label NOT verified - no expected hash supplied. Got $actual"
+        Write-Warn "  Record it and pass it back next time, or this build is not reproducible."
+    }
+}
+
 Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Sysmon.zip' `
     -OutFile "$SysmonDir\Sysmon.zip" -UseBasicParsing
+Assert-Sha256 -Path "$SysmonDir\Sysmon.zip" -Expected $SysmonZipSha256 -Label 'Sysmon.zip'
 Expand-Archive -Path "$SysmonDir\Sysmon.zip" -DestinationPath $SysmonDir -Force
 Write-Ok 'Sysmon downloaded'
 
 Invoke-WebRequest -Uri $SysmonConfigUrl -OutFile "$SysmonDir\sysmonconfig.xml" -UseBasicParsing
+Assert-Sha256 -Path "$SysmonDir\sysmonconfig.xml" -Expected $SysmonConfigSha256 -Label 'sysmonconfig.xml'
+if ($SysmonConfigUrl -match '/master/') {
+    Write-Warn 'Configuration fetched from the tip of master. Pin the URL to a commit SHA for a reproducible baseline.'
+}
 Write-Ok 'SwiftOnSecurity configuration downloaded'
 
 $svc = Get-Service -Name 'Sysmon64' -ErrorAction SilentlyContinue
@@ -241,8 +321,8 @@ if ($null -eq $svc) {
     Write-Ok 'Sysmon already present: configuration updated only'
 }
 
-wevtutil sl 'Microsoft-Windows-Sysmon/Operational' /ms:$ChannelSizeBytes 2>&1 | Out-Null
-Write-Ok 'Sysmon channel resized'
+wevtutil sl 'Microsoft-Windows-Sysmon/Operational' /ms:$ChannelSizeBytes | Out-Null
+if ($LASTEXITCODE -eq 0) { Write-Ok 'Sysmon channel resized' } else { Write-Warn "Sysmon channel could not be resized (wevtutil exit code $LASTEXITCODE)" }
 
 # ===========================================================================
 # 7 - Verification

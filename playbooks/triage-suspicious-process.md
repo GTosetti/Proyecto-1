@@ -103,8 +103,10 @@ Consequences that change how you triage:
   runs Sysmon *in addition to* native auditing rather than instead of it.
 - **4672 does not mean the process ran elevated.** Every remote invocation in this lab
   produced a *pair* of 4624 events — one with `elevatedToken %%1842` (Yes) plus a 4672, one
-  with `%%1843` (No) and no 4672 — 8 times out of 8. The process that actually launched
-  carried the second LogonId and `TokenElevationType %%1938` (Limited). That is the UAC linked
+  with `%%1843` (No) and no 4672 — 4 out of 4 invocations, which is where the measured
+  8 x 4624 and 4 x 4672 come from: two logons and one 4672 per invocation. The process that
+  actually launched carried the second LogonId and `TokenElevationType %%1938` (Limited). That
+  is the UAC linked
   token visible in the log. Codes: `%%1936` Default (UAC does not apply, e.g. SYSTEM),
   `%%1937` Full (elevated), `%%1938` Limited (filtered).
 

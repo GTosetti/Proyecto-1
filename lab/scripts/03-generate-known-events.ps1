@@ -55,15 +55,33 @@ function Write-Ok($t)   { Write-Host "  [ok] $t"    -ForegroundColor Green }
 
 function New-ThrowawaySecret {
     <#
-      Generates a random string at run time. Exists so that no password literal
-      is ever written into this file or committed to this repository, and so
-      that nothing generated here can be reused anywhere. Includes one character
-      from each class to satisfy Windows password complexity.
+      Generates a random secret at run time and hands it back as a SecureString.
+      Exists so that no password literal is ever written into this file or
+      committed to this repository, and so that nothing generated here can be
+      reused anywhere. Includes one character from each class to satisfy Windows
+      password complexity.
+
+      PSScriptAnalyzer reports ConvertTo-SecureString -AsPlainText -Force as an
+      Error, and in general it is right: the rule exists because the plaintext
+      normally comes from a literal in the file, from a prompt, or from
+      somewhere it can be read back. Here it comes from the three lines above -
+      24 bytes out of a cryptographic RNG, built in memory, converted once, and
+      never printed, stored, logged or returned in plain form. Suppressed at the
+      single place the conversion happens, with the reason written down, rather
+      than by excluding the rule in CI: everywhere else in this repository the
+      rule still applies.
     #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSAvoidUsingConvertToSecureStringWithPlainText', '',
+        Justification = 'The plaintext is a 24-byte CSPRNG value created on the preceding line, converted once and never stored, printed or reused. No password literal exists in this repository.')]
+    [OutputType([System.Security.SecureString])]
+    param()
+
     $bytes = New-Object byte[] 24
     $rng   = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $rng.GetBytes($bytes)
-    return ([Convert]::ToBase64String($bytes) + '!aA1')
+    $plain = [Convert]::ToBase64String($bytes) + '!aA1'
+    return (ConvertTo-SecureString $plain -AsPlainText -Force)
 }
 
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -88,7 +106,7 @@ Write-Host "confusing the two is the single most common reason an event 'is not 
 # the end of this file.
 Write-Step "1/5  $FailedLogonCount failed logons against an account that does not exist"
 
-$wrongSecret = ConvertTo-SecureString (New-ThrowawaySecret) -AsPlainText -Force
+$wrongSecret = New-ThrowawaySecret
 for ($i = 1; $i -le $FailedLogonCount; $i++) {
     $cred = New-Object System.Management.Automation.PSCredential($NonExistentUser, $wrongSecret)
     try   { Start-Process -FilePath 'cmd.exe' -Credential $cred -ErrorAction Stop }
@@ -103,8 +121,18 @@ for ($i = 1; $i -le $FailedLogonCount; $i++) {
 # working" from "something wrong" is the parent, not the process itself.
 Write-Step '2/5  Process tree: cmd -> powershell -> whoami'
 
-cmd.exe /c "powershell.exe -NoProfile -Command whoami /all | Out-Null" | Out-Null
-Write-Ok 'cmd.exe -> powershell.exe -> whoami.exe'
+# Redirection has to be cmd's own, inside the quoted string. An earlier version
+# of this line ended `... whoami /all | Out-Null"`, and cmd - not PowerShell -
+# parsed that pipe: cmd resolved the right-hand side first, found no command
+# called Out-Null, and never started the left-hand side at all. The step printed
+# [ok] and produced no tree. Measured: exit code 255, no powershell.exe and no
+# whoami.exe created. The `> nul 2>&1` form below is what step 3 already uses.
+cmd.exe /c "powershell.exe -NoProfile -Command whoami /all > nul 2>&1"
+if ($LASTEXITCODE -eq 0) {
+    Write-Ok 'cmd.exe -> powershell.exe -> whoami.exe'
+} else {
+    Write-Host "  [!]  cmd.exe returned $LASTEXITCODE - the process tree may not have been created" -ForegroundColor Yellow
+}
 
 # A base64-encoded command: legitimate in administration scripts, a classic in
 # malware. Without Script Block Logging (4104) all you would see is the -enc
@@ -134,7 +162,7 @@ foreach ($cmd in 'whoami /priv', 'net user', 'net localgroup administrators', 'i
 Write-Step '4/5  Test account, group change and service (all removed below)'
 
 try {
-    $tempSecret = ConvertTo-SecureString (New-ThrowawaySecret) -AsPlainText -Force
+    $tempSecret = New-ThrowawaySecret
     New-LocalUser -Name $TestAccountName -Password $tempSecret -Description 'Temporary lab test account' `
         -AccountNeverExpires -ErrorAction Stop | Out-Null
     Write-Ok "account $TestAccountName created                -> 4720"

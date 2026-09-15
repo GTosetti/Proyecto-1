@@ -10,8 +10,11 @@
           Sysmon       1   "Process Create"                   (Sysinternals)
 
       It also dumps Sysmon 3 (network connection) and 22 (DNS query), for which
-      the Windows Security log has no equivalent at all, and finishes with a
-      volume count.
+      the Security channel has no equivalent with the audit policy this lab
+      runs, and finishes with a volume count. The precise version: 5156 would
+      record a connection with its process image and PID, but its subcategory
+      (Filtering Platform Connection) is deliberately disabled here for volume;
+      a DNS query has no Security-channel equivalent at all.
 
       Output is written to a text file so it can be copied off the VM and
       attached to a writeup.
@@ -180,7 +183,9 @@ foreach ($e in $sys1) {
 # ===========================================================================
 W "##############################################################################"
 W "# 3. SYSMON 3 (network connection) and 22 (DNS query)"
-W "#    The Windows Security log has NO equivalent for either."
+W "#    No Security-channel equivalent for either, with the audit policy this"
+W "#    lab runs: 5156 is off (Filtering Platform Connection), and a DNS query"
+W "#    has no Security-channel record at all."
 W "#    Read the UtcTime FIELD of these two, not the channel's TimeCreated:"
 W "#    they are written to the channel 3-4 s after they actually happen, and"
 W "#    sorting by TimeCreated reverses cause and effect."

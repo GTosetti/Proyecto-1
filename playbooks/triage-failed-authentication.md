@@ -12,8 +12,14 @@ ATT&CK: T1110.001 (Password Guessing), T1087 (Account Discovery).
 
 | Rule | Level | Fires on | Seen in lab |
 |---|---|---|---|
-| 60122 | 5 | A single Windows logon failure (Security 4625) | 20 times on 2026-09-07 |
+| 60122 | 5 | A single Windows logon failure (Security 4625) | 20 alerts across the whole 2026-09-07 exercise |
 | 60204 | 10 | Correlation: multiple logon failures in a short window (T1110) | 2 times on 2026-09-07 |
+
+Note the 20. Rule 60122 fires once per 4625, and that exercise generated 22 of them (15
+enumeration + 3 targeted over SMB, plus 4 failed RDP attempts). Two are unaccounted for. The
+shortfall has not been traced to a cause, and it is recorded here rather than rounded away,
+because "the alert count is lower than the event count" is itself a coverage observation and
+the first thing to check on any burst is whether the queue saw all of it.
 
 Rule 60204 is the one that lands in the queue. It is an accumulation of 60122 events. **It
 does not read the `SubStatus` field**, which is the field that separates a user who forgot a
@@ -41,18 +47,26 @@ Windows setting and attributed it to the adversary.
 
 ---
 
-## 3. The field that decides everything: SubStatus
+## 3. The two fields that decide: Status and SubStatus
 
-All failed logons carry `Status = 0xC000006D` ("the logon is bad"). The useful value is one
-level down.
+The 18 failures measured here all carried `Status = 0xC000006D` ("the logon is bad"), and for
+that status the useful value is one level down in `SubStatus`. **That is not true of every
+failure.** 4625 splits the reason across both fields, and which field carries it depends on
+the reason — so read `Status` first and `SubStatus` second, always both.
 
-| SubStatus | Windows means | Triage means |
-|---|---|---|
-| `0xC0000064` | The account name does not exist | Enumeration. The attacker is still shooting blind |
-| `0xC000006A` | The account exists, the password is wrong | Targeted. The attacker now knows where to aim |
-| `0xC0000234` | Account locked out | The lockout policy engaged — check what preceded it |
-| `0xC0000072` | Account disabled | Someone is trying an account that was retired |
-| `0xC0000070` | Workstation restriction | Logon restriction hit — rare, worth a second look |
+| Status | SubStatus | Windows means | Triage means |
+|---|---|---|---|
+| `0xC000006D` | `0xC0000064` | The account name does not exist | Enumeration. The attacker is still shooting blind |
+| `0xC000006D` | `0xC000006A` | The account exists, the password is wrong | Targeted. The attacker now knows where to aim |
+| `0xC0000234` | `0x0` | Account locked out | The lockout policy engaged — check what preceded it. **The code is in `Status`; `SubStatus` is empty** |
+| `0xC000006E` | `0xC0000072` | Account disabled | Someone is trying an account that was retired |
+| `0xC000006E` | `0xC0000070` | Workstation restriction | Logon restriction hit — rare, worth a second look |
+
+Only the first two rows have ever been produced in this lab. No account here was locked out,
+disabled or restricted, so rows 3-5 come from Microsoft's 4625 reference, not from a
+measurement — and that is exactly why they matter: a procedure that groups on `SubStatus`
+alone renders a lockout as `0x0` and a disabled account as a code with no context, and the
+analyst reads "unknown" where Windows wrote an answer.
 
 Measured on 2026-09-07, 18 attempts from 10.10.10.5:
 
@@ -101,9 +115,12 @@ you have ten identical events; if you read it you have two incidents of differen
 
 Two more reading notes measured in this lab:
 
-- **`workstationName` empty (`-`)** on all 18 attempts of 2026-09-07 — a signature of
-  non-Windows tooling (impacket / netexec style clients), which do not populate the field the
-  way a Windows client does.
+- **`workstationName` empty (`-`)** on all 18 attempts of 2026-09-07 — a fingerprint of the
+  client tool, not of the operating system behind it. The counter-example is in the Group B
+  column above: on 2026-08-08 `smbclient`, from the same Kali VM against the same endpoint,
+  populated the field with `KALI`. Two non-Windows tools, one OS, opposite behaviour. Treat an
+  empty value as something to check (netexec / impacket-style clients leave it empty), never
+  as evidence that the client was not Windows.
 - **logon type 3 does not mean SMB.** With NLA enabled, failed RDP also arrives as type 3.
   See `triage-remote-access.md`; if RDP is plausible, that playbook's correlation step is
   mandatory before you name the protocol in a ticket.
@@ -119,7 +136,7 @@ Two more reading notes measured in this lab:
 │   ├─ Many distinct sources, one target account ──► distributed guessing. Widen to 24 h. Go to Q2 per source.
 │   └─ One source ──► continue
 │
-├─ Q2. Group by SubStatus (query A)
+├─ Q2. Group by Status AND SubStatus (query A — grouping on SubStatus alone loses two branches)
 │   │
 │   ├─ Mostly 0xC0000064 across ≥3 distinct target names
 │   │     ──► USER ENUMERATION / SPRAYING. Lockout policy does not apply. TRUE POSITIVE.
@@ -136,8 +153,12 @@ Two more reading notes measured in this lab:
 │   ├─ 0xC0000064 burst FOLLOWED BY 0xC000006A on a real account
 │   │     ──► enumeration succeeded and became targeted. Highest priority branch. Go to Q3.
 │   │
-│   └─ 0xC0000234 (locked out) present
-│         ──► the control engaged. Still triage the preceding attempts; a lockout is a symptom.
+│   ├─ Status 0xC0000234 present (SubStatus 0x0 — read the STATUS field for this one)
+│   │     ──► the control engaged. Still triage the preceding attempts; a lockout is a symptom.
+│   │
+│   └─ Status 0xC000006E present
+│         ──► not a password problem. SubStatus says which restriction: 0xC0000072 disabled,
+│             0xC0000070 workstation. An attempt against a retired account is its own finding.
 │
 ├─ Q3. Did any attempt SUCCEED? (query B — 4624 from the same source, same window +5 min)
 │   ├─ No 4624 from that source ──► attack failed so far. Escalate as attempted access.
@@ -155,7 +176,7 @@ Two more reading notes measured in this lab:
 
 ## 6. Queries
 
-### Query A — group 4625 by source and SubStatus (SIEM)
+### Query A — group 4625 by source, Status and SubStatus (SIEM)
 
 `query-a.json`:
 
@@ -174,6 +195,7 @@ Two more reading notes measured in this lab:
     "by_source": {
       "terms": { "field": "data.win.eventdata.ipAddress", "size": 20 },
       "aggs": {
+        "by_status":      { "terms": { "field": "data.win.eventdata.status", "size": 10 } },
         "by_substatus":   { "terms": { "field": "data.win.eventdata.subStatus", "size": 10 } },
         "by_logontype":   { "terms": { "field": "data.win.eventdata.logonType", "size": 10 } },
         "distinct_users": { "cardinality": { "field": "data.win.eventdata.targetUserName" } },
@@ -192,6 +214,12 @@ curl -k -u admin:<REDACTED> -H 'osd-xsrf: true' -H 'Content-Type: application/js
 
 Read it as: `distinct_users` high + `0xC0000064` dominant = enumeration.
 `distinct_users` = 1 + `0xC000006A` dominant = targeted.
+
+`by_status` is not decoration. Every failure this lab produced came back `0xC000006D`, so the
+aggregation looks redundant until the day it is not: a lockout reports `0xC0000234` in `status`
+with `subStatus` `0x0`, and `by_substatus` alone would show that as an unexplained `0x0`
+bucket. `by_status` is the bucket that tells you the account hit a control rather than a wrong
+password.
 
 ### Query B — did anything succeed from that source
 
@@ -261,6 +289,7 @@ $rows = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(
       Time        = $_.TimeCreated.ToString('o')
       RecordId    = $_.RecordId
       Target      = $d['TargetUserName']
+      Status      = $d['Status']          # 0xC0000234 (lockout) lives HERE, not in SubStatus
       SubStatus   = $d['SubStatus']
       LogonType   = $d['LogonType']
       Source      = $d['IpAddress']
@@ -270,14 +299,14 @@ $rows = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4625; StartTime=(
     }
   }
 
-$rows | Group-Object Source, SubStatus | Sort-Object Count -Descending |
+$rows | Group-Object Source, Status, SubStatus | Sort-Object Count -Descending |
         Select-Object Count, Name | Format-Table -AutoSize
 $rows | Group-Object Source | ForEach-Object {
   "{0}: {1} attempts, {2} distinct targets, first {3}, last {4}" -f `
     $_.Name, $_.Count, ($_.Group.Target | Sort-Object -Unique).Count,
     ($_.Group.Time | Sort-Object)[0], ($_.Group.Time | Sort-Object)[-1]
 }
-$rows | Sort-Object Time | Select-Object Time, Target, SubStatus, LogonType, Source | Format-Table -AutoSize
+$rows | Sort-Object Time | Select-Object Time, Target, Status, SubStatus, LogonType, Source | Format-Table -AutoSize
 ```
 
 Also worth running once, to confirm the policy you are about to cite in a ticket:
@@ -323,8 +352,10 @@ success. Say that explicitly.
 
 1. Rule ID, level, and the window in `systemTime`.
 2. Source address, and whether it should ever authenticate to this asset.
-3. Total attempt count, split by SubStatus, with the distinct target names listed.
-4. Logon type, logonProcessName, authentication package, workstationName.
+3. Total attempt count, split by `Status` **and** `SubStatus`, with the distinct target names
+   listed.
+4. Logon type, logonProcessName, authentication package, workstationName — and if
+   workstationName is empty, that it is a tool fingerprint and not an OS attribution.
 5. The timestamp of the transition `0xC0000064` → `0xC000006A`, if it happened.
 6. Whether any 4624 followed from the same source, and its `TargetLogonId` if so.
 7. Lockout policy as read from the host, and the explicit note that it does not cover the

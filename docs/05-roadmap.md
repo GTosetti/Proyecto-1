@@ -25,12 +25,12 @@ and [`investigations/003-smb-rdp-attack-chain.md`](../investigations/003-smb-rdp
 
 | Capability | Current state | Measurement |
 |---|---|---|
-| Endpoint process telemetry | Works, with a known noise floor | 167 events generated produced 27 alerts (2026-08-11); Security 4688 alerted 16 of 16 through a catch-all rule at level 3, Sysmon Event ID 1 alerted 1 of 11 |
-| Authentication telemetry | Works, including the field that matters | 18 password attempts separated by `SubStatus` into 15 × `0xC0000064` (accounts that do not exist) and 3 × `0xC000006A` (real account, wrong password), 2026-09-07 |
+| Endpoint process telemetry | Works, with a known noise floor | 172 events generated produced 36 alerts (2026-08-11), recounted over the widened window; the first, window-clipped pass reported 167 and 27 — see the window-edge note in `investigations/002`; Security 4688 alerted 16 of 16 through a catch-all rule at level 3, Sysmon Event ID 1 alerted 1 of 11 |
+| Authentication telemetry | Works, including the field that matters | 18 password attempts, all carrying Status `0xC000006D`, separated by `SubStatus` into 15 × `0xC0000064` (accounts that do not exist) and 3 × `0xC000006A` (real account, wrong password), 2026-09-07 |
 | Network visibility | None | A 65,535-port TCP SYN scan lasting 88 seconds produced 0 attributable alerts (2026-08-08). A 7-port `-sS -sV` scan left 2 Sysmon Event ID 3 records and 0 Security 5156 records |
 | Domain / Kerberos telemetry | None — no domain exists | `DC01` is planned at 4 GB RAM / 2 vCPU on 10.10.10.5 and has not been created |
 | Email telemetry | None — no mail server exists | T1684.002 (Email Spoofing) was studied from ATT&CK on 2026-07-31 and recorded as not reproducible in this lab |
-| Systematic technique coverage | Ad hoc | Portfolio counter as of 2026-09-07: ATT&CK techniques simulated and detected = 3 (target 10); own Sigma rules = 0 |
+| Systematic technique coverage | Ad hoc | Portfolio counter as of 2026-09-07: ATT&CK techniques simulated and detected = 3 (target 10); own Sigma rules deployed = 0 — 21 rule documents across 12 files are drafted in `detections/sigma/`, none has been deployed to the lab manager, so none is validated in this repository's sense of the word |
 | Time agreement between sources | Absent | Wazuh `@timestamp` measured 1.754 s / 1.821 s / 1.757 s behind the endpoint's `systemTime` on three consecutive event records; inside Sysmon, events 3 and 22 reach the channel 3.2 s and 4.0 s after their own `UtcTime` |
 
 Two facts constrain everything below, and both are measured rather than assumed:
@@ -154,7 +154,7 @@ never alerted (4697, measured 2026-08-08).
 |---|---|---|
 | R1-A | Domain exists and is joined | `WIN11-VICTIMA` authenticates a domain account, and the `base-limpia` snapshot story is re-established: a rollback of both VMs leaves the domain functional, verified the same way the current snapshots were (services running, addresses intact) |
 | R1-B | DC telemetry reaches the SIEM | Wazuh agent on `DC01` reports `connected`, and a query returns events from the DC for a deliberately generated domain logon |
-| R1-C | Three-layer verdict recorded | For each Kerberos-related event ID exercised, the writeup records generated (present in the log) / collected (present in the index) / detected (produced an alert, with rule ID and level) — the same table shape used for the twelve priority endpoint event IDs |
+| R1-C | Three-layer verdict recorded | For each Kerberos-related event ID exercised, the writeup records generated (present in the log) / collected (present in the index) / detected (produced an alert, with rule ID and level) — the same generated / collected / detected table shape used everywhere else in this repository |
 | R1-D | At least one domain-only attack is executed and triaged | A credential attack that has no local-account equivalent is run from Kali against the domain and investigated from the SIEM, with exact timestamps and the fields that separate it from ordinary authentication |
 | R1-E | Coverage gaps are declared, not implied | Every DC event ID that generates and collects but does not alert is added to the gap inventory with a proposed rule, exactly as 4697, 4648 and 4798/4799 were |
 | R1-F | Time discipline holds | Kerberos authentication succeeds, which is itself the proof that R0.2 was done, and timeline construction still uses the endpoint/DC clocks rather than `@timestamp` |
@@ -175,11 +175,16 @@ when the domain works; it is finished when the gap inventory has grown.
 | 2026-08-08 | `nmap -sS -p- -T4` — 65,535 ports in 88 seconds, 8 ports found open | **0** attributable alerts. The 6 alerts inside the window were unrelated background 4688 process creations |
 | 2026-09-07 | `nmap -sn` sweep plus `-sS -sV` against 7 ports | **2** Sysmon Event ID 3 records (inbound to :3389 from 10.10.10.5, `Initiated=false`) and **0** Security 5156 records |
 
-This is structural, not a misconfiguration. A Wazuh agent reads Windows event logs, and Windows
-does not write a log entry for a SYN to a closed port. The Filtering Platform Connection audit
-subcategory, which would produce 5156/5157, is deliberately left off because of its volume.
-No additional Wazuh rule can close this gap, which is the point: it is an architecture gap, and
-the honest answer is a sensor on the network segment rather than more rules on the host.
+This is structural, not a misconfiguration — but the structure is this endpoint's audit policy as
+much as the agent's design. A Wazuh agent reads Windows event logs, and with the subcategories
+enabled here, nothing recorded the scan. The subcategory that would is **Audit Filtering Platform
+Packet Drop** (5152/5153), which records a packet the Filtering Platform dropped — the 65,527
+filtered ports. It is off, deliberately, for volume, and it has never been measured in this lab.
+**Audit Filtering Platform Connection** (5156/5157) is a different thing: it records permitted and
+blocked connections, so even enabled it would only have covered the eight ports that answered.
+No additional Wazuh rule can close the gap with the telemetry that exists, which is the point: it
+is an architecture gap, and the recommended answer is a sensor on the network segment rather than
+more rules on the host.
 
 **What it unlocks.**
 
@@ -189,14 +194,18 @@ the honest answer is a sensor on the network segment rather than more rules on t
   activity once `DC01` exists, and anything targeting a machine with no agent.
 - Protocol-level evidence for the attacks already detected on the host, so a failed logon has a
   packet-level counterpart rather than only an event ID.
-- The missing portfolio category. Three of the four required writeup categories are covered and
-  the uncovered one is network analysis; the counter for solved packet-capture exercises is 0.
-  The 2026-09-07 chain does not count, because it contains host logs and no capture.
+- The missing portfolio category. One of the four required writeup categories is covered
+  (endpoint). Network, phishing and unscripted investigation are all open; R2 unlocks the first
+  and R3 the second. The counter for solved packet-capture exercises is 0. The 2026-09-07 chain
+  does not count towards the network category, because it contains host logs and no capture, and
+  it does not count towards unscripted investigation either: the same person ran the attack and
+  knew the answer before querying.
 
 **Design decision this item must make and document.** There are two candidate approaches and they
 are not equivalent:
 
-1. **Host-side**: enable Windows Filtering Platform auditing (5156/5157) and write a rule for many
+1. **Host-side**: enable Windows Filtering Platform auditing — Packet Drop (5152/5153) for the
+   dropped SYNs, Connection (5156/5157) for the ports that answer — and write a rule for many
    distinct destination ports from one source address inside a short window. Cheap to try, but it
    accepts a log volume that was deliberately avoided, and it still only sees traffic to that one
    host.
@@ -217,11 +226,11 @@ precisely because it is cheap — the comparison itself is a result worth writin
 | R2-C | Capture retained and analysable | A packet capture of one full attack chain is stored outside the repository and analysed in a writeup, with the protocol-level evidence lined up against the host events by timestamp |
 | R2-D | Sensor placement is proven, not assumed | The writeup shows a capture containing traffic between two VMs neither of which is the sensor — the check that separates a real vantage point from a hopeful one |
 | R2-E | Volume is quantified | The chosen option's cost is measured: events or alerts per hour added at idle, so the decision to keep it is made on a number |
-| R2-F | The comparison is recorded | If option 1 is tested, its result (what 5156 does and does not show, and at what volume) is written down even if the conclusion is that it was the wrong tool |
+| R2-F | The comparison is recorded | If option 1 is tested, its result (what 5152/5153 and 5156/5157 each do and do not show, and at what volume) is written down even if the conclusion is that it was the wrong tool |
 
 **Cost and risk.** A fourth VM against 46 GB of free disk and 28 GB of unused RAM, plus retention
 for captures, which is the resource this lab is closest to exhausting. Risk of over-collection is
-real: the funnel measured on the host side (167 → 27, and about 2,100 → 835) gets worse with a
+real: the funnel measured on the host side (172 → 36, and about 2,100 → 835) gets worse with a
 source that produces an event for every connection. R2-E exists to force that into the open.
 
 ---
@@ -274,7 +283,8 @@ R3-A is deliberately worded as the minimum that makes R3-B and R3-C possible.
 
 **Blind spot.** Coverage is currently established one exercise at a time, by hand. The counter on
 2026-09-07 read: ATT&CK techniques simulated and detected = 3, against a target of 10; alerts
-triaged = 2, against a target of 50; own Sigma rules = 0. Techniques studied from documentation
+triaged = 2, against a target of 50; own Sigma rules deployed = 0, with 21 rule documents across
+12 files drafted and none deployed to the manager. Techniques studied from documentation
 (five, read in depth on 2026-07-31) are not the same as techniques exercised, and the repository
 is careful to keep those two claims apart. What is missing is a way to execute many techniques
 reproducibly and record a verdict for each.

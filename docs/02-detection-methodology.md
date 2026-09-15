@@ -40,15 +40,28 @@ flowchart LR
     S3 --- N
 ```
 
-Measured as a funnel on this lab:
+As a funnel on this lab. The middle column is where it breaks down:
 
 | Exercise | Generated | Reached the manager | Became alerts |
 |---|---|---|---|
-| 2026-08-08 | not counted | ~2,100 (agent counter read 2,098 sent) | 835 indexed for the endpoint |
-| 2026-08-11 (B4) | 167 on the endpoint | 167 | 27 |
+| 2026-08-08 | not counted | not counted at the manager; the agent's own send counter read 2,098 | 835 indexed for the endpoint |
+| 2026-08-11 (B4) | 172 on the endpoint over the widened window (167 on the first, window-clipped pass) | **not counted** | 36 |
 
-In the first exercise more than half the telemetry that reached the SIEM never became
-queryable. In the second, 84% of it did not.
+**Layer 2 was never measured in this lab.** The middle column cannot be filled from the alert
+index, because the manager writes to the index only what matched a rule — so an event that
+arrived and matched nothing is indistinguishable, from the SIEM side, from one that never
+arrived. The agent's send counter is the closest thing to a figure, and it is agent-side: it
+records what the agent believes it sent, not what the manager received. Everything in this
+document that says "collected" is therefore *inferred* from the channel being declared in
+`ossec.conf` and the agent reporting `connected`. §2 gives the measurement that would replace
+the inference, and §9 marks the gaps whose layer that inference decides.
+
+What *is* measured is the two ends. In the first exercise fewer than half of the events the
+agent reported sending came out as indexed alerts. In the second, 167 events were counted on the
+endpoint over a narrow window and 27 alerts came out of the index; recounted over the widened
+window that removes the boundary artefact, 172 events against 36 alerts: **79% of what the
+endpoint generated never became queryable.** Whether that 79% died at layer 2 or at layer 3 is exactly what this lab cannot yet
+separate — and saying so is the point of the model, not an excuse for it.
 
 ---
 
@@ -70,8 +83,12 @@ Generation fails for four reasons, in rough order of how often they bite:
   wrapping the baseline script in `Tee-Object` under PowerShell 5.1 turned a native
   executable's stderr into a terminating error, steps 1–5 applied, and `Sysmon64.exe -i` never
   ran (see `01-lab-architecture.md` §5).
-- **The platform genuinely does not record it.** This is the hard case, because no configuration
-  fixes it. Windows does not log a TCP SYN to a closed port anywhere.
+- **The platform genuinely does not record it, or the configuration does not.** These look
+  identical from the channel and they are not the same finding. A TCP SYN to a closed port is
+  the example worked through in §3.2: nothing on this endpoint recorded one, but that is because
+  the *Audit Filtering Platform Packet Drop* subcategory (5152/5153) is off, not because Windows
+  has no record of it. Before writing "the platform does not record this", check whether a
+  subcategory or a sensor setting would.
 
 **How to test layer 1 independently:** cause the event deliberately, then read the channel on
 the host with the SIEM entirely out of the picture:
@@ -106,6 +123,16 @@ Failure modes seen or reasoned about here:
 **How to test layer 2 independently:** confirm the agent's status is `connected`, confirm the
 channel is listed in the agent configuration, and compare an event count on the host against the
 count that arrived. The host-side count is the ground truth; the SIEM side is the claim.
+
+**This lab has done the first two and not the third, and that is a real hole in this document.**
+The count that arrived was never produced, for any channel, in any exercise. It cannot be
+produced from `wazuh-alerts-*`, because the manager indexes only what a rule matched — an event
+that arrived and matched nothing leaves no row to count. The measurement that would settle it is
+specific and cheap: set `<logall_json>yes</logall_json>` on the manager, re-run one exercise, and
+count the same events in `wazuh-archives-*`, which holds everything decoded regardless of whether
+a rule fired. That has not been done here. Until it is, every "layer 3" verdict below carries an
+unstated assumption — that the event actually arrived — and a layer-2 failure would produce
+identical evidence. Where that matters to a specific finding, it is said in place.
 
 ### Layer 3 — Matching
 
@@ -144,9 +171,17 @@ All four are from this lab and all four are the same shape — silence — with 
 window. **Layer 1 passes.**
 
 The `Security` channel is declared in the agent's `ossec.conf` and the agent status was
-`connected`. **Layer 2 passes.**
+`connected`. **Layer 2 is inferred to pass, and that is the weak link in this example.** No count
+of Security events arriving at the manager was taken, and none can be taken from the alert index;
+`wazuh-archives-*` with `<logall_json>` would give it and is not enabled here (§2). So what is
+established is that collection is *expected*, not that it happened.
 
-A query of `wazuh-alerts-*` returned **0 documents** with Event ID 4697. **Layer 3 fails.**
+A query of `wazuh-alerts-*` returned **0 documents** with Event ID 4697. **Layer 3 fails — or
+layer 2 does, and this evidence cannot tell them apart.** The reason for calling it layer 3 is
+circumstantial rather than direct: other Security-channel events from the same window and the
+same channel did reach the index (the 4688s, the 4720/4732/4726 sequence), so the channel as a
+whole was plainly flowing. That is an argument, not a measurement, and it is worth less than the
+one command that would replace it.
 
 What makes this case instructive is that the same real-world fact — a service was installed —
 *did* alert, through Event ID **7045** from the `System` channel. So the dashboard was not
@@ -176,11 +211,25 @@ for inbound connections to `:3389` from `10.10.10.5` with `Initiated=false` — 
 Security 5156 events, because the Filtering Platform Connection subcategory is not audited
 (deliberately; it is very high volume).
 
-This is a **layer 1 failure that no rule can repair**. A Wazuh agent reads Windows event logs,
-and Windows does not write a record for a SYN to a closed port. The gap is architectural:
-either enable Filtering Platform auditing (5156/5157) and accept the volume, or put a network
-sensor — Suricata, Zeek — on the segment. The honest answer for this lab is the second, and
-until it exists, "we detect reconnaissance" is a claim this lab cannot make.
+This is a **layer 1 failure that no rule can repair**, and it is worth being precise about whose
+failure it is. A Wazuh agent reads Windows event logs, and with the subcategories enabled on this
+endpoint nothing was written for a SYN to a closed port. But Windows *can* write one: *Audit
+Filtering Platform Packet Drop* emits 5152/5153 when the firewall drops a packet, which is
+exactly the state of the 65,527 filtered ports. That subcategory is off here — it was not
+considered when the audit policy was set — so this lab's silence is a configuration result, not a
+platform limit. It has never been switched on and the scan has never been re-run against it, so
+no count of 5152 events exists in this repository.
+
+Note also which subcategory is the right one. *Filtering Platform Connection* (5156/5157) records
+a connection **permitted**; on this scan it would have covered only the 8 open ports and told
+nothing about the 65,527 others. Recommending it as the fix — which an earlier version of this
+document did — would have produced almost no evidence of the very scan it was offered to detect.
+
+The gap remains architectural in practice: either enable Packet Drop auditing and accept the
+volume of a per-packet audit on an internet-facing-ish host, or put a network sensor — Suricata,
+Zeek — on the segment. The second is the answer for this lab, because it also sees traffic that
+never reaches this host, and until it exists "we detect reconnaissance" is a claim this lab
+cannot make.
 
 The distinction matters when reporting coverage. A layer-3 gap is a backlog item for a detection
 engineer. A layer-1 gap of this kind is a purchase order or an architecture change, and calling
@@ -188,8 +237,12 @@ it a rule gap sends the work to the wrong team.
 
 ### 3.3 Sysmon 3 and 22: ingested, and nobody is looking
 
-Both channels pass layers 1 and 2 cleanly. Sysmon is running, the
-`Microsoft-Windows-Sysmon/Operational` channel is declared to the agent, and the events arrive.
+Layer 1 passes cleanly and is measured: Sysmon is running and the events are in the channel on
+the host. Layer 2 is inferred, on the same terms as §3.1 — the
+`Microsoft-Windows-Sysmon/Operational` channel is declared to the agent and the agent is
+`connected`, but no count of arriving Sysmon events was taken. Sysmon Event ID 1 from the same
+channel and the same window *did* reach the index, which is the circumstantial argument that the
+channel was flowing.
 
 | Source | Generated | Alerted |
 |---|---|---|
@@ -201,7 +254,7 @@ Both channels pass layers 1 and 2 cleanly. Sysmon is running, the
 | Security 4798 + 4799 (local group enumeration), B4 | 2 | 0 |
 | Security 4689 (process terminated), B4 | 12 | 0 |
 
-Three of these are worth singling out:
+Three of these matter more than the rest:
 
 - **Sysmon 22** is the DNS record of the host. Zero coverage means command-and-control
   resolution, domain-generation-algorithm behaviour and lookups to known-bad domains all pass
@@ -260,7 +313,9 @@ alone gives you only the first.
 
 ### The measurement
 
-In the first end-to-end verification window on 2026-08-08 (00:44:48Z–00:44:56Z), Wazuh raised
+The first end-to-end verification on 2026-08-08 drove activity across an 8-second window,
+00:44:48Z–00:44:56Z. The alerts were counted over a deliberately widened query range,
+00:44:40Z–00:45:10Z, for the boundary reason set out in §6.1. Inside that range Wazuh raised
 **82 alerts**:
 
 | Level | Count |
@@ -373,8 +428,9 @@ conclusion before it was caught.
 
 The initial B4 count showed 4 × 4624 generated / 2 alerted and 3 × 4672 / 1 alerted, which
 looked like a filtering problem. Widening the range to 17:22:20–17:23:00 showed **8 × 4624 and
-4 × 4672, every one of them alerting**. Each automation call produces a *pair* of 4624 events
-and the pairs were being cut in half by the window boundary.
+4 × 4672, every one of them alerting**. Each of the **4** automation calls produces a *pair* of
+4624 events plus one 4672, and the pairs were being cut in half by the window boundary — which
+is why the corrected counts are 8 and 4, not 16 and 8.
 
 There was no gap. A false gap in a coverage report is as damaging as a false positive in a
 queue, and harder to disprove later. Only the gaps that survived a widened window — 4648,
@@ -471,7 +527,7 @@ password* — the attacker now knows where to aim. **The transition between the 
 moment enumeration becomes a targeted attack**, and the correlation rule that fired
 (60204, level 10) does not read the field at all, so it cannot tell the two apart.
 
-Worth noting alongside it: the local lockout policy is 10 attempts / 10 minutes, so **the 15
+The local lockout policy is 10 attempts / 10 minutes, so **the 15
 attempts against non-existent accounts were free**. Lockout policy is blind to the enumeration
 phase entirely.
 
@@ -492,10 +548,18 @@ ones.
 The same logic applies to RDP. With NLA enabled, **four failed RDP logins produced 4625 at logon
 type 3, not type 10.** The only type 10 in the whole exercise appeared at 18:35:09, when a full
 graphical session actually established (`Negotiate`, `LogonProcessName User32`, accompanied by
-TerminalServices-LocalSessionManager 41 → 42 → 21 → 22 → 24). A detection built on
+TerminalServices-LocalSessionManager 41 → 42 → 21 → 22 — session logon followed by shell start;
+the 24 that followed at 18:36:49 is the disconnection, not part of the establishment). A
+detection built on
 *"RDP brute force = 4625 type 10"* misses every NLA-protected target — which is the default
-configuration. The fix is to correlate 4625 type 3 with TerminalServices-RemoteConnectionManager
-EID 1149/261 in the same window, because the logon type alone is not sufficient.
+configuration. The proposed fix is to correlate 4625 type 3 with
+TerminalServices-RemoteConnectionManager activity in the same window, because the logon type
+alone is not sufficient — but the corroborator is weaker than it looks and this lab has not
+closed it. EID 1149 is *"User authentication succeeded"*, and the only 1149s measured here came
+from the two successful authentications at 18:33:30–31, not from the four failures at
+18:33:28–29. Whether a failed NLA attempt writes 261, or anything at all on that channel, has
+not been confirmed in this lab. Until it is, "4625 type 3 alongside concurrent RDP listener
+activity" is the most a rule here can honestly claim to detect.
 
 ---
 
@@ -533,6 +597,10 @@ gates the next, and a failure identifies which team owns the fix.
 - [ ] Can the agent's identity actually read the channel? (On Windows, group membership requires
       a **reboot** to enter the token.)
 - [ ] Count on the host and count in the SIEM. They should agree. The host count is the truth.
+      **Count against the archive, not the alert index** — on Wazuh that means
+      `<logall_json>yes</logall_json>` and `wazuh-archives-*`, because the alert index holds only
+      what a rule matched and cannot tell "never arrived" from "arrived and matched nothing".
+      This lab has not done it; §2 says what that costs the findings below.
 - [ ] Is the channel large enough that the event survives until it ships? (Security defaults to
       20 MB; it is a circular buffer and overwriting is silent.)
 
@@ -581,23 +649,27 @@ coverage assessment is a list of specific, layer-classified, testable gaps, not 
 
 | # | Gap | Layer | How it was established |
 |---|---|---|---|
-| 1 | Security 4697 (service installed) matched by no rule | detection | Present in the channel, channel declared to the agent, 0 documents in `wazuh-alerts-*` |
+| 1 | Security 4697 (service installed) matched by no rule | detection (collection inferred, not measured) | Present in the channel, channel declared to the agent, 0 documents in `wazuh-alerts-*` |
 | 2 | Sysmon 3 (network connection) has no coverage | detection | 1 generated / 0 alerted in B4; 2 generated / 0 alerted on 2026-09-07 |
 | 3 | Sysmon 22 (DNS query) has no coverage | detection | 1 generated / 0 alerted |
 | 4 | Security 4648 (explicit-credential logon) has no coverage | detection | 1 / 0, confirmed against a widened window |
 | 5 | Security 4798/4799 (local group enumeration) has no coverage | detection | 2 / 0, confirmed against a widened window |
 | 6 | PowerShell 4103/4104 have no coverage | detection | 110 generated / 0 alerted |
 | 7 | Discovery commands are swept up by the catch-all 4688 rule at level 3 | detection | `whoami.exe` produced the same alert as `sppsvc.exe` |
-| 8 | Port scans are invisible to a host-agent-only architecture | collection | 65,535-port scan, 88 s, 0 attributable alerts; 7-port scan left 2 Sysmon 3 events and 0 Security 5156 |
+| 8 | Port scans leave no host-side record under this audit policy | **generation** | 65,535-port scan, 88 s, 0 attributable alerts; 7-port scan left 2 Sysmon 3 events and 0 Security 5156. Nothing is written on the host, so there is nothing to collect — the failure is at layer 1. The subcategory that would write it, Filtering Platform Packet Drop (5152/5153), is off and has never been tested here |
 | 9 | Password spraying is indistinguishable from ordinary failed logons | detection | Rule 60204 accumulates 60122 events without reading `SubStatus` |
 | 10 | Rule 92213 fires at level 15 on benign PowerShell | detection | Reproduced 1× / 5× / 12× on three separate dates |
 | 11 | RDP failure detection lacks listener-side corroboration | detection | 4 failed RDP logins appeared as 4625 type 3, indistinguishable from SMB by type |
-| 12 | Security 1102 (audit log cleared) has never been generated | **generation** | The only one of the twelve priority Event IDs with no lab data — its detection path is untested end to end |
-| 13 | No time synchronisation between endpoint and SIEM | collection | −1.8 s manager offset measured across three consecutive records, plus a 3–4 s Sysmon channel-write lag |
+| 12 | Security 1102 (audit log cleared) has never been generated | **untested** | 1102 has never been produced in this lab and no query has ever been run against it, so nothing is known about any of the three layers for it |
+| 13 | No time synchronisation between endpoint and SIEM | **not a pipeline layer** | −1.8 s manager offset measured across three consecutive records, plus a 3–4 s Sysmon channel-write lag. Events are generated, collected and matched normally; what is defective is the timestamp on the evidence, which is a property of the record rather than of a stage |
 
 Gap 12 deserves its label. It is not a detection gap and it is not a collection gap — **it is
-untested**, which under this method is a distinct and honest state. The `base-limpia` snapshot
-exists precisely so it can be triggered deliberately and the alert path confirmed.
+untested**, which under this method is a distinct state and the correct one to record. The
+`base-limpia` snapshot exists precisely so it can be triggered deliberately and the alert path
+confirmed. Gap 13 is the other one that does not fit: a clock offset is a defect in the evidence,
+not a stage of the pipeline, and forcing it into one of the three layers would have made the
+column meaningless. Where the layer column says "inferred", it means what §2 says it means — the
+channel is declared and the agent is connected, and nothing was counted at the manager.
 
 ---
 

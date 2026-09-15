@@ -3,7 +3,7 @@
 This is the build guide for the lab that produced every measurement in this repository.
 It is written so that the lab can be rebuilt from nothing: hardware sizing, network,
 per-VM configuration, install order and the reason for that order, the telemetry
-baseline, and — the part most build guides skip — how to **prove** each layer works
+baseline, and — the part most build guides skip — how to **prove** each piece works
 instead of assuming it does.
 
 Every number below was taken on the machine described in [Host](#1-host-and-sizing).
@@ -27,7 +27,7 @@ No credential appears anywhere in this repository. Placeholders are written as
 7. [Step 4 — Telemetry baseline and agent](#7-step-4--telemetry-baseline-and-agent)
 8. [Step 5 — Attacker VM](#8-step-5--attacker-vm)
 9. [Step 6 — Snapshots](#9-step-6--snapshots)
-10. [Verification — proving each layer](#10-verification--proving-each-layer)
+10. [Verification — six checks](#10-verification--six-checks)
 11. [Known limits of this architecture](#11-known-limits-of-this-architecture)
 12. [Troubleshooting](#12-troubleshooting)
 13. [Scripts](#13-scripts)
@@ -182,7 +182,7 @@ argument returns *Invalid port-forward rule*:
 > **Do not add a forward for 9200.** The Wazuh indexer binds to localhost only, inside the
 > VM, so the forward completes a TCP connection that the indexer never answers — `curl`
 > returns error 35 (TLS). The working path from the host is the dashboard's console proxy;
-> see [Verification, layer 5](#layer-5--the-query-path).
+> see [Verification, check 5](#check-5--the-query-path).
 
 ---
 
@@ -364,7 +364,8 @@ detail; this section covers what they configure and why it matters, not their me
 | What it sets | Why |
 |---|---|
 | Static `10.10.10.20`, network profile **Private** | With a Public profile the firewall rules below do not apply. |
-| 10 advanced audit subcategories | Process Creation, Process Termination, Logon, Logoff, Special Logon, Account Lockout, User Account Management, Security Group Management, Audit Policy Change, Security System Extension. This is what produces 4688/4689/4624/4625/4634/4672/4720/4732/4719/4697. |
+| 10 advanced audit subcategories | Process Creation, Process Termination, Logon, Logoff, Special Logon, Account Lockout, User Account Management, Security Group Management, Audit Policy Change, Security System Extension. This is what produces 4688/4689/4624/4625/4634/4672/4720/4732/4740/4719/4697. Note that *Account Lockout* does not write 4740 — *User Account Management* does; Account Lockout produces a 4625 for an attempt against an already-locked account. |
+| What is deliberately **not** audited | Filtering Platform Connection (5156/5157), Filtering Platform Packet Drop (5152/5153), Object Access / File Share (5140/5145) and Credential Validation (4776), all for volume. Those four are the reason a port scan and a share enumeration leave no host-side record here. Knowing which subcategory would have caught a thing, and choosing not to enable it, is a different statement from "Windows cannot see it". |
 | `ProcessCreationIncludeCmdLine_Enabled = 1` | Without it, a 4688 says *powershell.exe ran* and nothing more. With it, it says what was run. The single highest-value registry value on a Windows endpoint for a SOC. |
 | ScriptBlockLogging (4104), ModuleLogging (4103) | 4104 records the de-obfuscated script body, which is what exposes `-EncodedCommand` one-liners. |
 | Channel size raised to 268,435,456 bytes (256 MB) on Security, System, Application, PowerShell/Operational and Sysmon/Operational | The Security channel defaults to 20 MB. With Sysmon running, a 20 MB channel wraps within hours and the evidence is gone on exactly the day you need it. |
@@ -438,15 +439,15 @@ Take a snapshot of each VM once it is configured and verified, before any destru
 exercise:
 
 ```powershell
-& $vbox snapshot "WIN11-VICTIMA" take "base-clean" --description "OS + audit + Sysmon + agent"
-& $vbox snapshot "WAZUH-SIEM"    take "base-clean" --description "Ubuntu + Wazuh 4.14.7"
+& $vbox snapshot "WIN11-VICTIMA" take "base-limpia" --description "OS + audit + Sysmon + agent"
+& $vbox snapshot "WAZUH-SIEM"    take "base-limpia" --description "Ubuntu + Wazuh 4.14.7"
 ```
 
-**Test the restore, do not assume it.** After restoring `base-clean` on the endpoint,
+**Test the restore, do not assume it.** After restoring `base-limpia` on the endpoint,
 confirm the three things that would silently break:
 
 ```powershell
-& $vbox snapshot "WIN11-VICTIMA" restore "base-clean"
+& $vbox snapshot "WIN11-VICTIMA" restore "base-limpia"
 # then, inside the guest:
 Get-Service Sysmon64, WazuhSvc | Format-Table Name, Status
 Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like '10.10.*' }
@@ -457,13 +458,20 @@ intact.
 
 ---
 
-## 10. Verification — proving each layer
+## 10. Verification — six checks
 
-A lab that "looks fine" is the normal failure mode. Each layer below has a command that
-produces evidence and a stated pass criterion. Run them in order; a failure at layer *n*
+A lab that "looks fine" is the normal failure mode. Each check below has a command that
+produces evidence and a stated pass criterion. Run them in order; a failure at check *n*
 makes every test above it meaningless.
 
-### Layer 1 — L3 reachability
+These are numbered checks, not the three layers the rest of the repository argues about.
+Everywhere else, layer 1 is generation, layer 2 is collection and layer 3 is detection,
+and "a layer-3 hole" means a gap no dashboard can show you. Six checks do not map onto
+three layers, so they are given a different word here: checks 1 and 2 test the plumbing
+underneath layer 1, checks 3, 4 and 6 test layers 1, 2 and 3, and check 5 tests whether
+you can ask the question at all.
+
+### Check 1 — L3 reachability
 
 ```bash
 # from Kali
@@ -474,7 +482,7 @@ ping -c 4 10.10.10.10
 **Pass:** replies from both. If ICMP to the endpoint fails, the firewall rule
 `FPS-ICMP4-ERQ-In` is not enabled or the network profile is Public, not Private.
 
-### Layer 2 — the service is alive, not just the port
+### Check 2 — the service is alive, not just the port
 
 ```bash
 nc -vz 127.0.0.1 2222          # from the host
@@ -489,7 +497,7 @@ was answering. The reported symptom was "the password is wrong"; the cause was t
 away. **A completed handshake is not a live service.** The same reasoning applies when
 reading `nmap` output during triage: check the banner, not the state column.
 
-### Layer 3 — generation (does Windows log it at all)
+### Check 3 — generation (does Windows log it at all)
 
 Run [`scripts/03-generate-known-events.ps1`](scripts/03-generate-known-events.ps1) on the
 endpoint. It deliberately produces events whose Event ID, time and cause you already know,
@@ -508,7 +516,7 @@ took effect), and the Sysmon channel is not empty.
 For a per-channel, per-Event-ID count over a fixed window, use
 [`scripts/07-coverage-count.ps1`](scripts/07-coverage-count.ps1).
 
-### Layer 4 — collection (does the agent ship it)
+### Check 4 — collection (does the agent ship it)
 
 On the endpoint:
 
@@ -521,9 +529,9 @@ Get-Content 'C:\lab\wazuh-agent.state'      # copy it there first; see Troublesh
 the dashboard, `Agents` shows the endpoint as `Active`.
 
 On this build, the agent reported 2,098 events to the manager during the verification
-exercise — a number worth recording, because layer 5 is measured against it.
+exercise — a number worth recording, because check 5 is measured against it.
 
-### Layer 5 — the query path
+### Check 5 — the query path
 
 The indexer is not reachable by port forward. The working path from the host is the
 dashboard's console proxy, which is already exposed on 8443 and accepts basic auth:
@@ -546,7 +554,7 @@ Two things to know before trusting a query result:
   `data.win.system.eventRecordID`, for example).
 - **Use the right clock.** See the next section.
 
-### Layer 6 — detection (does a rule match it)
+### Check 6 — detection (does a rule match it)
 
 This is the layer with no error message. Generate an event you know occurred, then check
 whether it produced an alert.
@@ -556,7 +564,7 @@ Measured on this build:
 | Exercise | Events generated | Alerts indexed |
 |---|---|---|
 | End-to-end verification, 2026-08-08 | ~2,100 reported to the manager | 835 for that endpoint |
-| Process-tree exercise, 2026-08-11 | 167 | 27 |
+| Process-tree exercise, 2026-08-11 | 172 over the widened window (167 on the first, window-clipped pass) | 36 |
 
 **Pass criterion is not "alerts appeared".** It is that you can name, for each Event ID you
 generated, whether it alerted and which rule matched. Absence of an alert is not evidence
@@ -571,7 +579,7 @@ them is part of what the lab is for.
 
 | Limit | Evidence |
 |---|---|
-| **No network visibility.** A host agent reads Windows event logs; Windows does not log a SYN to a closed port. | `nmap -sS -p-` across 65,535 ports ran 88 seconds and found 8 open ports. Wazuh raised 6 alerts in that window, all unrelated background 4688 events — 0 attributable to the scan. Closing this gap needs Windows Filtering Platform auditing (5156/5157, very high volume) or a network sensor, not more Wazuh rules. |
+| **No network visibility, with the audit policy this lab runs.** A host agent reads Windows event logs, and nothing in the ten subcategories enabled by `01-endpoint-telemetry.ps1` records an inbound SYN. | `nmap -sS -p-` across 65,535 ports ran 88 seconds and found 8 open ports, with the remaining 65,527 reported *filtered* — dropped by the host firewall. Wazuh raised 6 alerts in that window, all unrelated background 4688 events — 0 attributable to the scan. This is a configuration limit, not a Windows limit: **Audit Filtering Platform Packet Drop** (5152/5153) is the subcategory that records a dropped packet, and it is deliberately off here for volume. It was not turned on, so no 5152 count was measured. **Audit Filtering Platform Connection** (5156/5157) would only have recorded the eight permitted connections, so it is the wrong answer to this particular question. The recommended fix remains a network sensor, not more Wazuh rules. |
 | **No time synchronisation.** | The Wazuh `@timestamp` — the dashboard's default time axis — is the *manager's* clock and ran 1.754 s / 1.821 s / 1.757 s behind the endpoint across three consecutive event records. Query on `data.win.system.systemTime` instead. Separately, Sysmon events 3 (network) and 22 (DNS) are written to the channel 3–4 seconds after they occur, so for those two read the event's own `UtcTime`, never the channel's `TimeCreated`. This gets materially worse once a domain controller joins, since Kerberos rejects skew above five minutes. |
 | **The default ruleset has holes that are invisible from the dashboard.** | Event ID 4697 (service installed) is generated by Windows, collected by the agent, and matched by no default rule — a `wazuh-alerts-*` query returned 0 documents for it, while the same real-world fact alerted via 7045 from the System channel. Sysmon 3, Sysmon 22, Security 4648 and Security 4798/4799 each produced events and zero alerts. |
 | **Untuned rule severity is noise.** | The only level-15 alert of the first end-to-end test was rule 92213 firing on `__PSScriptPolicyTest_<random>.ps1` — a file PowerShell writes to `%TEMP%` to test its own execution policy. Reproduced on three separate dates (×1, ×5, ×12). Meanwhile the highest-value reconnaissance alert of a later exercise was a level 6. |
@@ -599,7 +607,7 @@ much time each one cost.
 | A shell script copied into the Linux guest fails at its shebang | CRLF line endings | This repo pins line endings in `.gitattributes`: `*.ps1 text eol=crlf`, everything else `eol=lf`. Keep `.sh` files LF when copying them into a guest |
 | `guestcontrol copyto` fails with *"already exists and is a directory"* | In VirtualBox 7.2 `copyto` is positional and wants the **full destination path**, not a directory | `copyto <host-source> C:\lab\file.ps1`, not `--target-directory C:\lab` |
 | Cannot read `wazuh-agent.state` or `ossec.log` over `guestcontrol` — *Access denied* | Files under `C:\Program Files (x86)\ossec-agent\` need administrator rights | Copy them to `C:\lab` from the elevated terminal first. Note that `cmd /c type` breaks on paths with spaces — use the 8.3 form (`C:\PROGRA~2\...`) |
-| `curl` to a forwarded 9200 fails with error 35 | The Wazuh indexer binds to localhost inside the VM; the NAT proxy answers the connection, the indexer never does | Query through the dashboard console proxy on 8443 — see [Layer 5](#layer-5--the-query-path) |
+| `curl` to a forwarded 9200 fails with error 35 | The Wazuh indexer binds to localhost inside the VM; the NAT proxy answers the connection, the indexer never does | Query through the dashboard console proxy on 8443 — see [check 5](#check-5--the-query-path) |
 | `natnetwork modify … --port-forward-4 "delete rulename"` returns *Invalid port-forward rule* | The delete form is three separate tokens | `--port-forward-4 delete rulename` |
 | Keystrokes injected with `keyboardputstring` vanish; the command returns success | The window looks focused (title bar highlighted) but does not hold **keyboard** focus. Scancodes are dropped silently | Diagnose by sending the Windows key: if the Start menu opens, injection works and the problem is focus. Fix with `Alt+Tab` (`38 0f 8f b8`). For long text, `keyboardputfile <file>` |
 | Injected text comes out with the wrong characters in a Linux guest | `keyboardputstring` assumes a **US** keyboard layout; a guest set to another layout maps them differently (e.g. `/` produces `-`) | `sudo loadkeys us`, do the work, `sudo loadkeys <original>` on the way out. Also: PowerShell strips double quotes from the argument — use single quotes and `\| sudo tee` instead of `sudo bash -c "…"` |

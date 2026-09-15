@@ -21,6 +21,10 @@ which fields separate one kind of failure from another.
 It is also **not a network investigation**. There is no packet capture here. Every measurement
 below comes from Windows event logs, the Sysmon channel, and the Wazuh alert index.
 
+And **no credential was cracked**. The guessing phase failed. A credential I already owned was
+then supplied deliberately, so that the post-authentication half of the chain would produce
+telemetry to read. Section 6 says so again, because the timeline invites the opposite reading.
+
 Credentials are deliberately absent from this repository. The lab account is written as
 `<LAB_USER>` throughout.
 
@@ -104,8 +108,8 @@ All times UTC, 2026-09-07. The endpoint's local time zone is UTC-03:00.
 | 18:27:42 | 1 | SMB null session via `netexec` | T1135 | Security 4624, `ANONYMOUS LOGON`, type 3, NTLM - Wazuh rule 92652, level 6 |
 | 18:30:10 - 18:30:43 | 2 | 15 password attempts against 5 non-existent accounts, spaced about 2 s apart | T1110.001, T1087 | Security 4625 x15, `SubStatus 0xC0000064` |
 | 18:30 (within the burst) | 2 | First correlation alert | T1110 | Wazuh rule 60204, level 10 |
-| 18:31:13 - 18:31:16 | 2 | 3 password attempts against the real account | T1110.001 | Security 4625 x3, `SubStatus 0xC000006A` |
-| 18:31:19 | 2 | Valid credential accepted over SMB | T1078.003 | Security 4624 type 3, NTLM - Wazuh rule 92657, level 6 |
+| 18:31:13 - 18:31:16 | 2 | 3 password attempts against the real account, all three wrong | T1110.001 | Security 4625 x3, `SubStatus 0xC000006A` |
+| 18:31:19 | 2 | Guessing abandoned. A known-valid credential is supplied deliberately and accepted over SMB | T1078.003 | Security 4624 type 3, NTLM - Wazuh rule 92657, level 6 |
 | 18:31:19 | 2 | Share enumeration: `ADMIN$`, `C$`, `IPC$` (READ) | T1135 | `netexec --shares` |
 | 18:33:28 - 18:33:29 | 3 | 4 failed RDP logins | T1021.001, T1110.001 | Security 4625 x4, **logon type 3** |
 | 18:33:30 - 18:33:31 | 3 | 2 successful RDP authentications with `+auth-only`, no session created | T1021.001 | Security 4624 type 3, TS-RemoteConnectionManager EID 1149 |
@@ -126,32 +130,53 @@ disconnect EID 40 remain - no type 10 at all.
 
 | Phase | Action | Detected | What fired, or why nothing did |
 |---|---|---|---|
-| 1 | ICMP sweep of the subnet | No | Windows does not log it, and no rule could |
-| 1 | 7-port SYN and version scan | Partially, uselessly | 2 Sysmon EID 3 events, 0 Security 5156. No alert. *Filtering Platform Connection* auditing is deliberately off because of its volume |
+| 1 | ICMP sweep of the subnet | No | Nothing in the enabled subcategories records it, and no rule could |
+| 1 | 7-port SYN and version scan | Partially, uselessly | 2 Sysmon EID 3 events, 0 Security 5156. No alert. Both filtering-platform subcategories are deliberately off for volume: *Filtering Platform Connection* (5156/5157) and *Filtering Platform Packet Drop* (5152/5153) |
 | 1 | SMB null session | **Yes** | Security 4624 `ANONYMOUS LOGON` -> Wazuh rule 92652, level 6. The only reliable trace of the whole reconnaissance phase |
-| 2 | 15 attempts against non-existent users | **Yes, as volume** | 20 x rule 60122 (level 5) accumulated into rule 60204 (level 10, T1110) x2 |
+| 2 | 15 attempts against non-existent users | **Yes, as volume** | Each `4625` raises rule 60122 (level 5); the accumulation raised rule 60204 (level 10, T1110) x2. The 60122 total is exercise-wide, not per phase - see the aggregate below |
 | 2 | 3 attempts against a real user | Not distinguished | Same rules. Rule 60204 does not read `SubStatus`, so it cannot separate enumeration from a targeted attack |
-| 2 | Successful SMB logon with a valid credential | **Yes** | Security 4624 type 3 NTLM -> Wazuh rule 92657, level 6 |
-| 2 | Share enumeration (`ADMIN$`, `C$`, `IPC$`) | No | No host event ties the enumeration to the session |
+| 2 | SMB logon with a deliberately supplied valid credential | **Yes** | Security 4624 type 3 NTLM -> Wazuh rule 92657, level 6 |
+| 2 | Share enumeration (`ADMIN$`, `C$`, `IPC$`) | No | Nothing in the collected channels ties the enumeration to the session. *Audit Object Access -> File Share* would: 5140 on the share access and 5145 on `IPC$` with a relative target of `srvsvc`. It is deliberately off in this lab, so this is another disabled subcategory rather than a limit of Windows |
 | 3 | 4 failed RDP logins | Yes, misclassified | 4625 at logon type 3, indistinguishable by type from the SMB failures |
 | 3 | Full RDP session | **Yes** | 4624 type 10 -> rule 92657 (level 6, T1021.001) fired 3 times across the exercise |
 | - | Background noise | False positive | Rule 92213 (level 15, mapped to T1105) fired 12 times on `__PSScriptPolicyTest_*.ps1`, a file signed system PowerShell writes into `%TEMP%` to test its own execution policy |
 
-Wazuh alerts in the attack window: rule 60204 level 10 x2; rule 60122 level 5 x20; rule 92652
-level 6; rule 92657 level 6 x3; rule 92213 level 15 x12.
+Wazuh alerts aggregated over the whole attack window, 18:26:40Z - 18:40:00Z: rule 60204 level 10
+x2; rule 60122 level 5 x20; rule 92652 level 6; rule 92657 level 6 x3; rule 92213 level 15 x12.
+
+Those are window totals and cannot be split cleanly by phase, and one of them does not reconcile.
+Rule 60122 fires once per `4625`, and the exercise produced **22** failures (15 + 3 + 4) against
+**20** alerts. I do not know where the other two went: not collected, not matched, or outside the
+query range are all still open, and I did not chase it. A 20-against-22 gap is itself a coverage
+observation, and it is the kind that only appears when the generated count is taken from the
+endpoint rather than from the alert index.
 
 ## 5. Findings
 
 ### F-1. A port scan is nearly invisible to a host-agent-only architecture
 
 The `-sS -sV` scan of 7 ports left exactly **2 Sysmon EID 3 events** and **0 Security 5156
-events** on the endpoint. Neither produced an alert. The `Filtering Platform Connection` audit
-subcategory, which would generate 5156/5157, is deliberately not enabled because of its volume.
+events** on the endpoint. Neither produced an alert.
 
-This is a structural limit, not a misconfiguration. A Wazuh agent reads Windows event logs, and
-Windows does not record a SYN to a closed port anywhere. The lab has host visibility and no
-network visibility. The honest remediation is a network sensor on the segment, not more SIEM
-rules.
+Windows can be made to record part of this, and the distinction matters because the obvious
+remediation is the wrong one:
+
+- *Audit Filtering Platform Connection* generates **5156** ("a connection was permitted") and
+  **5157**. It is off here for volume. Turning it on would have logged only the ports that
+  answered, not the scan.
+- *Audit Filtering Platform Packet Drop* generates **5152** ("the filtering platform blocked a
+  packet") and **5153**. That is the subcategory that corresponds to a SYN arriving at a port the
+  firewall drops. It is also off here, deliberately, for the same volume reason.
+
+So the accurate statement is not that Windows records nothing. It is that **with the subcategories
+enabled on this endpoint, nothing recorded the scan**. 5152 was not measured in this lab, and
+saying otherwise would require enabling the subcategory and re-running the scan, which is new work
+rather than a correction to this document.
+
+The conclusion survives the correction. A Wazuh agent reads Windows event logs; a packet-drop log
+on one host answers "was I scanned" only for that host, and at a volume that is its own problem.
+The lab has host visibility and no network visibility, and the remediation is a network sensor on
+the segment, not more SIEM rules.
 
 ### F-2. `SubStatus` separates a blind spray from a targeted attack, and lockout policy only covers the second
 
@@ -168,8 +193,12 @@ attacker learned which of five guessed usernames was real at no cost. Lockout po
 the enumeration phase entirely, and the transition from `0xC0000064` to `0xC000006A` is the exact
 moment enumeration turns into a targeted attack.
 
-`WorkstationName` was empty (`-`) on every one of the 18 events, which is characteristic of
-non-Windows tooling such as impacket or netexec and is a usable secondary indicator.
+`WorkstationName` was empty (`-`) on every one of the 18 events. That is a fingerprint of the
+**tool**, not of the operating system behind it, and this lab contains the counter-example: on
+2026-08-08, `smbclient` run from the same Kali VM against the same endpoint populated the field
+with `KALI`. Two non-Windows tools, one host, opposite behaviour. Treat an empty
+`WorkstationName` as a tool fingerprint worth checking - it separated `netexec` from `smbclient`
+here - never as evidence that the client was not Windows.
 
 ### F-3. With NLA enabled, a failed RDP login is logon type 3, not type 10
 
@@ -210,10 +239,25 @@ itself and reached the anonymous SMB session last.
 
 ## 6. Impact assessment
 
-The account whose password was guessed is a **local administrator**, so read access to `ADMIN$`
-and `C$` implies full control of the endpoint, and the chain ended in an interactive remote
-desktop session. Treated as a real incident this is initial access completed, not a failed
-attempt.
+**The guessing phase did not succeed, and nothing here was compromised.** The three attempts
+against the real account at 18:31:13 - 18:31:16 all failed with `SubStatus 0xC000006A`. Guessing
+was then abandoned: a known-valid credential for that account was supplied deliberately at
+18:31:19, and again to `xfreerdp` at 18:35:09, in order to generate the post-authentication
+telemetry the exercise needed. No password was recovered from the endpoint and no control was
+bypassed. The timeline invites the other reading, which is why it is stated here rather than left
+to inference.
+
+What the exercise therefore measures is narrower: **what a Windows endpoint records once an
+attacker already holds a valid credential.** That is the relevant question anyway, because the
+most common real path to a `4624` type 3 is a credential obtained somewhere else entirely, and
+nothing in the event says how it was obtained.
+
+Read that way the impact is still worth stating. The account used is a **local administrator**, so
+the `ADMIN$` and `C$` read access that followed corresponds to full control of the endpoint, and
+the chain ended in an interactive remote desktop session. Treated as a real incident, everything
+from 18:31:19 onward is what completed initial access looks like in the logs - which is exactly
+the case the detection work in section 8 has to cover, since the failed guessing that preceded it
+is the part the ruleset already sees.
 
 ## 7. Indicators
 
@@ -221,9 +265,9 @@ attempt.
 |---|---|
 | Source address | `10.10.10.5` |
 | Targeted accounts that do not exist | `admin`, `administrador`, `backup`, `sqlsvc`, `helpdesk` |
-| Compromised account | a local administrator account on `WIN11-VICTIMA` (`<LAB_USER>`) |
+| Account authenticated post-guessing | a local administrator account on `WIN11-VICTIMA` (`<LAB_USER>`). The credential was supplied deliberately, not guessed and not compromised |
 | Authentication packages | NTLM over SMB, `Negotiate` on the RDP session |
-| `WorkstationName` in the `4625` events | empty (`-`) |
+| `WorkstationName` in the `4625` events | empty (`-`) for `netexec`. Not a general non-Windows marker: `smbclient` from the same host populated it with `KALI` on 2026-08-08 |
 | Timing pattern | failures spaced about 2 s apart - fingerprint of the SMB rate limiter, not of the attacker |
 | Shares touched | `ADMIN$`, `C$`, `IPC$` (READ) |
 
@@ -237,7 +281,7 @@ Stated as mitigation -> residual gap -> what to detect.
 | Account lockout, 10 attempts / 10 minutes | Does not apply to accounts that do not exist; the first 15 attempts were free. Lockout is also a denial of service against the legitimate user | `4740` (account locked out), and bursts of `0xC0000064` as a spraying signal |
 | NLA on RDP | Prevents resource exhaustion; does not prevent credential guessing | `4625` logon type 3 correlated with the RDP listener's own events |
 | SMB signing required | No protection against a valid stolen credential | `4624` type 3 NTLM from addresses that are not known workstations |
-| Network connection auditing - **not enabled** | A port scan is almost invisible to the SIEM | Enable `Filtering Platform Connection` (5156/5157) and accept the volume, **or** accept that this belongs to a network IDS |
+| Filtering-platform auditing - **neither subcategory enabled** | A port scan is almost invisible to the SIEM | The host-side option is `Filtering Platform Packet Drop` (5152/5153), which is what records a dropped SYN; `Filtering Platform Connection` (5156/5157) only records the ports that answered and would not have evidenced this scan. Either accept the volume of the first, **or** accept that this question belongs to a network IDS |
 
 Concrete rules to write, in priority order:
 
@@ -276,10 +320,11 @@ Concrete rules to write, in priority order:
 ## 10. What I would do differently
 
 The two hypotheses I got wrong both came from the same mistake: assuming an event exists because
-the activity exists. A port scan happens on the network, so the endpoint has nothing to log; RDP
-is interactive, but NLA authenticates before the session is interactive. The general form of the
-correction is that **you have to check the layer that writes the log, not the layer where the
-action happens.**
+the activity exists. A port scan happens on the network, and the one subcategory that would have
+written the dropped packets is switched off on this endpoint; RDP is interactive, but NLA
+authenticates before the session is interactive. The general form of the correction is that **you
+have to check the layer that writes the log, not the layer where the action happens** - and then
+check whether that layer is turned on, which is a separate question I got wrong twice.
 
 The open question I could not answer from this data: how to reliably distinguish a legitimate
 `4624` type 3 (a machine mounting a share) from a malicious one, when the credential is valid in

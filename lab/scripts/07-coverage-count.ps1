@@ -20,7 +20,9 @@
       for. It is invisible from the dashboard. The only way to find one is to
       cause an event deliberately and check whether it ever became an alert.
 
-      Measured this way in this lab: 167 events generated produced 27 alerts.
+      Measured this way in this lab: 172 events generated produced 36 alerts.
+      (A first pass over a narrower window reported 167 and 27; it clipped
+      paired events at the boundary. Always widen the window and recount.)
       Process-creation events alerted 16 of 16 through a catch-all rule at the
       lowest level, while Sysmon process events alerted 1 of 11 - and that one
       matched a parent/child pattern rather than process creation itself.

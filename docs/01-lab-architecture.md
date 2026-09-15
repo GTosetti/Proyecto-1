@@ -1,8 +1,10 @@
 # Lab Architecture
 
-Every number in this document was measured on the lab described here. Nothing is estimated,
-and nothing is taken from vendor documentation unless it is labelled as such. Where a value
-was obtained by running a command, the command is named.
+Every number in this document was measured on the lab described here unless the text says
+otherwise, and nothing is taken from vendor documentation unless it is labelled as such. Where a
+value was obtained by running a command, the command is named. Two figures are inferences rather
+than measurements and are marked where they appear: the share of disk consumption attributed to
+the lab (§1), and the claim that the five declared channels reach the manager (§4.1, §4.2).
 
 Credentials are never written in this repository. The lab account appears as `<LAB_USER>`
 and passwords as `<REDACTED>`. The `10.10.10.0/24` addresses are RFC1918 lab addresses and
@@ -32,9 +34,12 @@ The whole of `02-detection-methodology.md` comes out of measurements taken here.
 | Free space 2026-09-07 | 46 GB (96% used) |
 | RAM in use with all three VMs running | 20 GB of 48 GB |
 
-The disk figures are included deliberately. Three VMs with 256 MB event channels, snapshots
-and ISOs consumed 213 GB in about six weeks. Capacity planning is part of running a SIEM,
-and this lab ran into it early.
+The disk figures are included deliberately. Free space on the single host disk fell from 259 GB
+to 46 GB over about six weeks — three VMs with 256 MB event channels, their snapshots and the
+ISOs account for most of that. The 213 GB is a whole-disk delta, not a per-VM measurement: the
+same disk holds unrelated material, so it is an upper bound on what the lab consumed. The VDI
+files were never sized individually. Capacity planning is part of running a SIEM, and this lab
+ran into it early.
 
 ---
 
@@ -188,7 +193,7 @@ flowchart TB
     APP --> AGT
     PS --> AGT
     SMON --> AGT
-    AGT -->|"agent protocol, 1514/udp"| MGR
+    AGT -->|"agent protocol, 1514/tcp"| MGR
     MGR -->|"only events matching a rule at level &ge; 3"| IDX
     IDX --> DSH
     DSH -->|"NAT port-forward 8443 &rarr; 443"| HOST
@@ -198,12 +203,21 @@ The important edge in that diagram is `MGR --> IDX`. **The manager only writes t
 what a rule matched.** Everything else is discarded. That single arrow is the origin of the
 three-layer coverage model in `02-detection-methodology.md`.
 
-Measured funnel:
+Measured funnel, with each column labelled for what was actually counted rather than for the
+stage it is meant to represent:
 
-| Exercise | Events reaching the manager | Alerts left in the index |
+| Exercise | Into the pipeline | Alerts left in the index |
 |---|---|---|
-| 2026-08-08 | ~2,100 (agent counter read 2,098 sent) | 835 for that endpoint |
-| 2026-08-11 (B4) | 167 generated on the endpoint | 27 |
+| 2026-08-08 | ~2,100 — the agent's own send counter read 2,098 sent. Agent-side; never confirmed at the manager | 835 for that endpoint |
+| 2026-08-11 (B4) | 172 counted on the endpoint with `Get-WinEvent` over the widened window. How many arrived at the manager was not counted. A first pass over a narrower window gave 167 | 36 |
+
+**Nothing in this lab has counted what reached the manager.** The manager indexes only what
+matched a rule, so an event that matched nothing leaves nothing to count — unless
+`<logall_json>yes</logall_json>` is enabled and `wazuh-archives-*` is queried, which has not been
+done here. Collection on this endpoint is therefore *inferred* from two facts (the channel is
+named in `ossec.conf`, and the agent reported `connected`), not measured. That inference is
+load-bearing for the whole three-layer model, and `02-detection-methodology.md` §2 states plainly
+what would turn it into a measurement.
 
 ### 4.2 Channels collected
 
@@ -217,8 +231,10 @@ The Wazuh agent's `ossec.conf` declares five channels:
 | `Microsoft-Windows-PowerShell/Operational` | 4103 module logging, 4104 script block logging |
 | `Microsoft-Windows-Sysmon/Operational` | Sysmon events 1, 3, 11, 13, 22 and the rest of the SwiftOnSecurity set |
 
-Agent status was confirmed `connected` before any exercise was run. A collected channel is not
-a detected channel — see section 4.6.
+Agent status was confirmed `connected` before any exercise was run. That status, plus the channel
+being named in `ossec.conf`, is the entire evidence that these five channels are collected: no
+host-to-manager count was ever taken for any of them (section 4.1). A collected channel is not a
+detected channel — see section 4.6.
 
 ### 4.3 Audit policy
 
@@ -231,24 +247,42 @@ Set with `auditpol`, not with the legacy nine categories. Ten subcategories enab
 | Logon | 4624, 4625 | Who got in, who failed, from where, by which mechanism. |
 | Logoff | 4634, 4647 | Closes the session, so `LogonId` can be scoped to a window. |
 | Special Logon | 4672 | Privileged account logon. Misread constantly — see the caveat below. |
-| Account Lockout | 4740 | The tail end of a brute-force attempt. |
-| User Account Management | 4720, 4722, 4726, 4738 | Account creation, enabling, deletion, modification. |
-| Security Group Management | 4728, 4729, 4732, 4733 | Privilege escalation by group membership. |
+| Account Lockout | 4625 with Status `0xC0000234` | The tail end of a brute-force attempt: the logon attempt made against an account that is *already* locked out. This subcategory does **not** write 4740, despite its name. |
+| User Account Management | 4720, 4722, 4726, 4738, **4740** | Account creation, enabling, deletion, modification — and the lockout event itself. 4740 ("a user account was locked out") is written here. |
+| Security Group Management | 4732, 4733 here; 4728, 4729 only once a DC exists | Privilege escalation by group membership. On this standalone host only the *local* group events (4732/4733) can occur: 4728/4729 describe security-enabled **global** groups and are written by a domain controller, which this lab does not have. |
 | Audit Policy Change | 4719 | An attacker turning off the logging is itself the signal. |
 | Security System Extension | 4697 | Service installation — a classic persistence mechanism. |
 
 Two subcategories were deliberately **not** enabled:
 
-- **Filtering Platform Connection (5156/5157)** — very high volume. Leaving it off is the direct
-  cause of the lab having no network-level host visibility (section 7). This was a conscious
-  trade, not an oversight.
-- **Object Access / file auditing** — not needed for the current exercises, and it multiplies
-  volume on a 256 MB channel.
+- **Filtering Platform Connection (5156/5157)** — very high volume. This was a conscious trade,
+  not an oversight.
+- **Object Access / file auditing, including File Share** — not needed for the current exercises,
+  and it multiplies volume on a 256 MB channel. The cost is specific rather than vague: *Object
+  Access → File Share* writes 5145 (detailed share access — which is what an `IPC$` /
+  `srvsvc` share enumeration produces) and 5140, so with it off there is no host event tying a
+  share enumeration to the session that performed it.
+
+A third was left off for a worse reason — it was not considered when this baseline was written —
+and it is the one that matters most to section 7:
+
+- **Filtering Platform Packet Drop (5152/5153)** — this is the subcategory that records a packet
+  the host firewall **dropped**, which is exactly the condition behind the 65,527 filtered ports
+  in the scan measured in section 7. Filtering Platform *Connection* would not have covered it:
+  5156 means *a connection was permitted*, so it would have recorded only the 8 open ports. The
+  distinction was missed when the audit policy was set. It is recorded here rather than quietly
+  corrected, because it changes what section 7 is allowed to claim. Packet Drop has **not** been
+  switched on, so nothing in this repository measures what it would have produced.
+
+Both Filtering Platform subcategories being off is the direct cause of this lab having no
+network-level host visibility (section 7).
 
 Caveat recorded from measurement: **4672 means the account is privileged, not that the process
 is elevated.** Every `VBoxManage guestcontrol run` produced *two* 4624 events with two
 different `LogonId` values — one with `elevatedToken %%1842` (Yes) plus a 4672, and one with
-`%%1843` (No) and no 4672. The pattern held 8 out of 8 times. The processes that actually
+`%%1843` (No) and no 4672. The pattern held on **4 out of 4 invocations**, which is what the
+widened-window count of 8 × 4624 and 4 × 4672 is: four invocations, one pair plus one 4672
+each. The processes that actually
 launched carried the second `LogonId` and their 4688 recorded `TokenElevationType %%1938`
 (Limited). That is the UAC linked token visible in the log.
 
@@ -279,7 +313,7 @@ set, **4688 still lacks seven things Sysmon 1 provides**:
 Both carry the session: 4688 `SubjectLogonId` matched Sysmon `LogonId` exactly on the measured
 event.
 
-Two consequences worth stating plainly:
+Two consequences follow:
 
 1. **Missing `ParentCommandLine` is the expensive omission.** With 4688 alone the analyst knows
    the parent was `cmd.exe` but not what that `cmd.exe` was doing, and must rebuild the chain by
@@ -496,13 +530,20 @@ hardware.
 attributable alerts. Six alerts fell in that window and all six were unrelated background 4688
 events. A later 7-port `-sS -sV` scan left exactly two host-side traces: two Sysmon Event ID 3
 records for inbound connections to `:3389` with `Initiated=false`, and zero Security 5156
-events, because Filtering Platform auditing is off.
+events, because Filtering Platform Connection auditing is off.
 
-A Wazuh agent reads Windows event logs. **Windows does not log a SYN to a closed port anywhere.**
-No amount of extra Wazuh rules closes this. The honest fixes are (a) enable Filtering Platform
-auditing and accept the volume, or (b) put Suricata or Zeek on the segment. Until one of those
-exists, any claim of "detecting reconnaissance" in this lab is limited to what the target host
-was made to *answer*, such as the SMB null session.
+A Wazuh agent reads Windows event logs. **With the audit subcategories enabled on this endpoint,
+nothing recorded the scan** — and no Wazuh rule repairs that, because there is no record for a
+rule to match. The limit is this configuration, not the platform: *Audit Filtering Platform
+Packet Drop* (5152/5153) records dropped packets and is the subcategory that would have covered
+the 65,527 filtered ports, and it is off (§4.3). *Audit Filtering Platform Connection*
+(5156/5157) would have recorded only the 8 permitted connections, so it is the wrong subcategory
+for this scan. Neither has been switched on here, so neither of those statements is a measurement
+in this lab — what was measured is the silence. The fixes are (a) enable Packet Drop auditing and
+accept the volume, or (b) put Suricata or Zeek on the segment. (b) stays the recommended answer,
+because it also sees traffic that never reaches this host at all. Until one of those exists, any
+claim of "detecting reconnaissance" in this lab is limited to what the target host was made to
+*answer*, such as the SMB null session.
 
 **No pcap, therefore no network-analysis category.** There is no traffic capture at all, so
 none of the writeups can claim network forensics.

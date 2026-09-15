@@ -36,7 +36,7 @@ level is an opinion held by whoever wrote the rule.
 | Should this source address reach SMB/RDP on this asset at all? | Lab map. 10.10.10.5 is the Kali attacker VM — and is the address reserved for the future DC01, so this attribution expires when stage 2 is built |
 | Is NLA enabled on RDP? | `(Get-WmiObject -Class Win32_TSGeneralSetting -Namespace root\cimv2\terminalservices).UserAuthenticationRequired` — it is, and section 3 is the consequence |
 | Which channels exist in the SIEM? | Only Security, System, Application, Sysmon and PowerShell are forwarded by the agent. **The Terminal Services channels are not** — corroboration requires the endpoint |
-| Is 5156 (Filtering Platform Connection) audited? | No, deliberately — it is very high volume. So there is no per-connection record in the Security log |
+| Are the Filtering Platform subcategories audited? | No, deliberately — both are very high volume. *Connection* (5156/5157, permitted and blocked connections) and *Packet Drop* (5152/5153, dropped packets) are off, so there is no per-connection and no per-drop record in the Security log |
 
 ---
 
@@ -48,7 +48,7 @@ Measured on 2026-09-07:
 |---|---|---|
 | 18:33:28–18:33:29 | 4 failed RDP attempts | 4 x Security 4625, **logon type 3** |
 | 18:33:30–18:33:31 | 2 authentications, auth-only (no session) | 4624 **type 3** + TS-RemoteConnectionManager 1149. Still no type 10 |
-| 18:35:09 | A full graphical session established | 4624 **type 10**, AuthenticationPackage Negotiate, LogonProcessName User32, plus LocalSessionManager 41 → 42 → 21 → 22 → 24 |
+| 18:35:09 | A full graphical session established | 4624 **type 10**, AuthenticationPackage Negotiate, LogonProcessName User32, plus LocalSessionManager 41 → 42 → 21 → 22. The 24 came later, at 18:36:49, when the session disconnected |
 
 Network Level Authentication moves authentication *in front of* session creation. Until a
 session is actually created there is nothing "remote interactive" to record, so the failure is
@@ -95,11 +95,12 @@ Remote-access alert
 ├─ Q3. Which protocol? Do NOT answer from the logon type. (query B, endpoint)
 │   ├─ TS-RemoteConnectionManager 1149 present with the same Source Network Address
 │   │     ──► RDP. 1149 carries the source address even when the logon type says "network".
-│   ├─ LocalSessionManager 21/22/24/25 present ──► an RDP session actually ran. Note its
-│   │     duration from 21 (logon) to 23/24 (logoff/disconnect).
+│   ├─ LocalSessionManager present ──► an RDP session actually ran. 21 = logon,
+│   │     22 = shell start (NOT a reconnection), 23 = logoff, 24 = disconnect,
+│   │     25 = reconnect. Note its duration from 21 to the 23 or 24 that ends it.
 │   ├─ Live SMB session visible (query C) or share access ──► SMB.
-│   └─ Neither ──► say "network logon, protocol not established" in the ticket. That is an
-│         honest answer; "RDP" without 1149 is a guess.
+│   └─ Neither ──► say "network logon, protocol not established" in the ticket. That is a
+│         defensible answer; "RDP" without 1149 is a guess.
 │
 ├─ Q4. Blast radius (query D)
 │   a) Which account? Is it a local administrator?
@@ -135,7 +136,7 @@ Remote-access alert
   "query": {
     "bool": {
       "filter": [
-        { "terms": { "data.win.system.eventID": ["4624","4625","4634","4647","4672","4776"] } },
+        { "terms": { "data.win.system.eventID": ["4624","4625","4634","4647","4672"] } },
         { "term":  { "data.win.eventdata.ipAddress": "10.10.10.5" } },
         { "range": { "data.win.system.systemTime": { "gte": "2026-09-07T18:00:00Z", "lte": "2026-09-07T19:00:00Z" } } }
       ]
@@ -152,6 +153,14 @@ curl -k -u admin:<REDACTED> -H 'osd-xsrf: true' -H 'Content-Type: application/js
 
 Remember the time field: `data.win.system.systemTime`, not `@timestamp`, which lags the
 endpoint by about 1.8 s (measured -1.754 / -1.821 / -1.757 s on three consecutive records).
+
+**4776 is deliberately not in that list, and the reason is worth knowing.** 4776 is the NTLM
+credential-validation event, and it is not a domain-controller-only event: a standalone machine
+writes it for its own local accounts, which is exactly the path taken on 2026-09-07. It is
+absent here because *Audit Credential Validation* is not among the ten subcategories enabled on
+this endpoint, so nothing generates it and querying for it returns nothing. If you add one
+subcategory to this lab, that is the one — it is the cheapest coverage available for NTLM
+authentication against local accounts.
 
 ### Query B — RDP corroboration (endpoint only — not in the SIEM)
 
@@ -178,8 +187,10 @@ Get-WinEvent -FilterHashtable @{
 } | Select-Object TimeCreated, Id, Message | Sort-Object TimeCreated | Format-Table -AutoSize
 ```
 
-The observed sequence for a real session on 2026-09-07 was 41 → 42 → 21 → 22 → 24. A
-connection that dies before logon leaves only 1149 and a 40.
+The observed sequence that *established* a real session on 2026-09-07 was 41 → 42 → 21 → 22;
+the 24 arrived separately at 18:36:49 when it disconnected. Read 22 as "the shell started",
+which is why it follows a fresh 21 — a reconnection to an existing session is 25, and this lab
+has never produced one. A connection that dies before logon leaves only 1149 and a 40.
 
 ### Query C — live SMB state (endpoint)
 
@@ -191,9 +202,14 @@ quser                      # interactive and RDP sessions currently on the box
 Get-SmbServerConfiguration | Select-Object EnableAuthRateLimiter, InvalidAuthenticationDelayTimeInMs
 ```
 
-Share enumeration itself does not alert in this lab — on 2026-09-07 `ADMIN$`, `C$` and `IPC$`
-were enumerated with READ at 18:31:19 and the trace of it is the preceding authentication, not
-the enumeration. If you want to know what was reachable, ask the host.
+Share enumeration itself leaves no host event in this lab — on 2026-09-07 `ADMIN$`, `C$` and
+`IPC$` were enumerated with READ at 18:31:19 and the only trace is the preceding
+authentication, not the enumeration. That is a subcategory decision, not a Windows limitation:
+*Audit Object Access → File Share* writes 5140 (a share was accessed) and 5145 (a share object
+was checked, which is where `IPC$` with a relative target of `srvsvc` shows up), and it is
+deliberately off here. So the right sentence in a ticket is "no share-access auditing is
+enabled on this host", not "Windows did not record it". If you want to know what was reachable,
+ask the host.
 
 ### Query D — what happened inside the session (SIEM)
 
@@ -222,9 +238,19 @@ Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; 
 Expect very little. A 7-port `nmap -sS -sV` against this host on 2026-09-07 left exactly two
 Sysmon 3 events (inbound to :3389 from 10.10.10.5, `Initiated=false`) and zero Security 5156
 events. A full 65,535-port SYN scan on 2026-08-08 ran 88 seconds and produced zero
-attributable alerts. **Port scanning is structurally invisible to a host-agent-only
-architecture** — that is an architecture gap, not a missing rule, and the honest fix is a
-network sensor on the segment rather than more Wazuh rules.
+attributable alerts.
+
+Be precise about why, because it is not "Windows cannot see a port scan". Windows can: almost
+every port in that scan was *filtered*, meaning the firewall dropped the packet, and dropped
+inbound packets are recorded by *Audit Filtering Platform Packet Drop* as 5152/5153. That
+subcategory is switched off on this endpoint, on purpose, for volume — so the evidence exists
+in principle and does not exist here. 5156 would not have helped either: it records a
+connection **permitted**, which is the eight ports that answered, not the 65,527 that did not.
+Nothing in this lab has measured what turning Packet Drop on would produce.
+
+**Port scanning is invisible to this host-agent configuration** — an architecture and audit
+policy gap, not a missing rule — and the fix is a network sensor on the segment rather than
+more Wazuh rules.
 
 ---
 
@@ -275,7 +301,10 @@ Escalate with what is known and name the missing piece.
    (`VBoxManage controlvm WIN11-VICTIMA setlinkstate<n> off`, where `<n>` is the adapter on
    SOCLAB — confirm it with `showvminfo --machinereadable` first) and the `base-limpia`
    snapshot. Restoring the snapshot destroys the evidence, so it comes last.
-9. What is not visible: no network sensor, 5156 not audited, TS channels not in the SIEM.
+9. What is not visible, named as audit-policy choices rather than as Windows limitations: no
+   network sensor; Filtering Platform Connection (5156/5157) and Packet Drop (5152/5153) not
+   audited; File Share (5140/5145) not audited; Credential Validation (4776) not audited; TS
+   channels not forwarded to the SIEM.
 10. The IP-attribution caveat if 10.10.10.5 is involved.
 
 ---

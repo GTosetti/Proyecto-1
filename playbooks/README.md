@@ -13,7 +13,7 @@ either closing it with a reason or handing it upward in a form somebody can act 
 
 | File | Covers | Anchored on |
 |---|---|---|
-| `triage-failed-authentication.md` | 4625 floods, spraying, user enumeration | SubStatus branching, lockout policy limits |
+| `triage-failed-authentication.md` | 4625 floods, spraying, user enumeration | Status/SubStatus branching, lockout policy limits |
 | `triage-suspicious-process.md` | Process-creation alerts, tree reconstruction | 4688 vs Sysmon 1 field semantics |
 | `triage-remote-access.md` | RDP and SMB alerts, anonymous sessions | NLA logon-type behaviour |
 | `escalation-template.md` | The hand-off note to tier 2 | Worked example from investigation 003 |
@@ -55,10 +55,12 @@ genuine console logon shows logonProcessName `User32` / `Winlogon`. Read
 
 **3. What is the rule actually matching on, and what does its level mean?**
 Rule level is severity if the event were real, not the probability that it is. Measured on
-2026-08-08: of 82 alerts in a nine-second window, the single level 15 was rule 92213 firing
-on `__PSScriptPolicyTest_<random>.ps1`, a file PowerShell writes into `%TEMP%` to test its
-own execution policy, dropped by the signed system `powershell.exe`. The same false positive
-recurred 5 times on 2026-08-11 and 12 times on 2026-09-07. In the same 2026-09-07 exercise
+2026-08-08: of 82 alerts counted over a deliberately widened query range of
+00:44:40Z–00:45:10Z around an eight-second generation window (00:44:48Z–00:44:56Z), the
+single level 15 was rule 92213 firing on `__PSScriptPolicyTest_<random>.ps1`, a file
+PowerShell writes into `%TEMP%` to test its own execution policy, dropped by the signed
+system `powershell.exe`. The same false positive recurred 5 times on 2026-08-11 and 12 times
+on 2026-09-07. In the same 2026-09-07 exercise
 the most informative alert of the reconnaissance phase was a level 6 (rule 92652, ANONYMOUS
 LOGON). Sorting the queue by level and starting at the top is, in this lab, a way to spend
 the shift on PowerShell talking to itself.
@@ -74,22 +76,28 @@ event's own `UtcTime` field, never the channel's `TimeCreated`. There is no NTP 
 between the VMs; this is an open gap, not a solved problem.
 
 **Absence of an alert is not absence of activity.** On 2026-08-08 the agent reported about
-2,100 events and 835 alerts were indexed for that endpoint. In the 2026-08-11 exercise, 167
-generated events produced 27 alerts. Anything that matched no rule is not searchable in
+2,100 events and 835 alerts were indexed for that endpoint. In the 2026-08-11 exercise, about
+four out of every five generated events produced no alert at all — the per-channel funnel is
+in `../investigations/002-process-telemetry-correlation.md`, and the count there is the one on
+the widened window, not the narrow one. Anything that matched no rule is not searchable in
 `wazuh-alerts-*` at all. When a playbook says "confirm on the endpoint", it is because the
 SIEM cannot answer that question.
 
 **Coverage has three layers, and only one of them fails loudly.** Generation (does Windows
 log it) → collection (does the agent ship it) → detection (does a rule match it). Security
-event 4697 "a service was installed" passes the first two layers and dies at the third: it
-was confirmed present in the Security log on 2026-08-08 and returned 0 documents in
-`wazuh-alerts-*`. A layer-3 hole produces no error and nothing to search for.
+event 4697 "a service was installed" is generated and never reaches the queue: it was
+confirmed present in the Security log on 2026-08-08 and returned 0 documents in
+`wazuh-alerts-*`. Layer 2 is the unmeasured one — the Security channel is declared to the
+agent and the agent reported `connected`, so collection is expected, but nothing in this lab
+counted what arrived at the manager, and the manager indexes only what matched a rule. So
+this evidence cannot separate a layer-2 failure from a layer-3 one. Either way it produces no
+error and nothing to search for, which is the property that matters at 3 a.m.
 
 **Widen the window before declaring a gap.** On 2026-08-11 a count of 4 x 4624 / 2 alerted
 looked like filtering. Widening the range from a 20-second to a 40-second window showed 8 x
-4624, every one of them alerting: each invocation produced a *pair* of 4624 events and the
-pairs were being cut in half by the window boundary. A false gap in a coverage claim is as
-damaging as a false positive in a queue.
+4624 and 4 x 4672 from 4 remote invocations, every one of them alerting: each invocation
+produced a *pair* of 4624 events and the pairs were being cut in half by the window boundary.
+A false gap in a coverage claim is as damaging as a false positive in a queue.
 
 **The index is not grep.** A `query_string` search for the unique marker string used in the
 2026-08-11 exercise returned 0 results while that string was sitting in

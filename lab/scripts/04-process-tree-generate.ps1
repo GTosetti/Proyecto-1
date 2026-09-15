@@ -3,8 +3,17 @@
     ---------------------------------------------------------------------------
     WHAT IT DOES
       Launches ONE known process tree, carrying a unique marker string in the
-      command line of every child, and writes the exact UTC window to a JSON
-      file so the collector scripts know what to look for.
+      command line of the cmd.exe and powershell.exe links, and writes the exact
+      UTC window to a JSON file so the collector scripts know what to look for.
+
+      The leaf is the exception and it matters: whoami.exe is launched with no
+      arguments, because whoami takes none that would carry a marker. So the
+      process the exercise cares about most is the one the marker search will
+      not return. Find it by image name inside the recorded window - which is
+      what 06-collect-evidence.ps1 does, with `-match 'whoami\.exe'` alongside
+      the marker match. Changing the leaf to something that could carry the
+      marker would change the telemetry the published counts describe, so it
+      has been left alone and documented instead.
 
     WHY IT EXISTS
       The point of the exercise is to take a single, fully understood event and
@@ -129,8 +138,12 @@ Write-Host " Record    : $recordPath"
 Write-Host ""
 Write-Host " WHAT TO LOOK FOR NOW"
 Write-Host " ----------------------------------------------------------"
-Write-Host " Security 4688   ProcessCommandLine contains $marker"
+Write-Host " Security 4688   CommandLine        contains $marker"
+Write-Host "                 (Wazuh: data.win.eventdata.commandLine - 4688 has no"
+Write-Host "                  field called ProcessCommandLine)"
 Write-Host " Sysmon   1      CommandLine        contains $marker"
+Write-Host " Security 4688   NewProcessName     ends with whoami.exe   <- the leaf"
+Write-Host "                 carries no marker; it is launched with no arguments"
 Write-Host " Sysmon   22     QueryName          = $DnsName"
 Write-Host " Sysmon   3      DestinationIp      = $TcpTarget port $TcpPort"
 Write-Host " SIEM            search the UTC window above, on the endpoint's"

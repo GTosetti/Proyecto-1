@@ -10,12 +10,19 @@ is different at each one:
 | Layer | Question it answers | Symptom when it fails |
 |---|---|---|
 | **Generation** | Does the operating system write the event at all? | Nothing in the channel. Findable with `Get-WinEvent` on the endpoint. |
-| **Collection** | Does the agent ship that channel to the SIEM? | Event on the endpoint, nothing in the index. Findable by comparing the two. |
+| **Collection** | Does the agent ship that channel to the SIEM? | Event on the endpoint, nothing in the index — which is also the symptom of a detection failure. |
 | **Detection** | Does a rule match it once it arrives? | **No symptom at all.** No error, no missing-data indicator, nothing to search for. |
 
 The third layer is the dangerous one. A detection gap is invisible from the dashboard by
 definition: the only way to find it is to cause the event deliberately and go looking for the
 alert that never came.
+
+One limitation of that table, stated up front. Wazuh indexes only what matched a rule, so an
+empty alert index cannot by itself separate layer 2 from layer 3. Everything called a detection
+gap below rests on the channel being declared in the agent's `ossec.conf` and the agent reporting
+`connected`: collection is expected, not independently counted. Separating the two layers
+properly needs something the alert index does not hold — a count of events arriving at the
+manager. That measurement is not in this repository.
 
 Lab under measurement: Windows 11 Pro build 10.0.26200 endpoint (`10.10.10.20`) with advanced
 audit policy, command line in 4688, PowerShell ScriptBlockLogging and ModuleLogging, and Sysmon
@@ -35,7 +42,7 @@ with the SwiftOnSecurity configuration; Wazuh 4.14.7 all-in-one on Ubuntu Server
 | G-04 | Security 4648 (explicit credentials) produces no alert | Detection | 1 generated / 0 alerted, confirmed on a widened window | A rule | — (proposed logic below) |
 | G-05 | Security 4798 / 4799 (local group enumeration) produce no alert | Detection | 2 generated / 0 alerted, confirmed on a widened window | A correlation | — (proposed logic below) |
 | G-06 | Discovery commands are swept up by a catch-all 4688 rule at level 3 | Detection | `whoami.exe` treated identically to `sppsvc.exe` (rule 67027, level 3) | A correlation | [`proc_creation_win_lolbin_discovery_burst.yml`](../detections/sigma/proc_creation_win_lolbin_discovery_burst.yml) |
-| G-07 | Port scans are structurally invisible to a host-agent-only architecture | Collection | 65,535-port scan, 88 s, **0** attributable alerts | Architecture (network sensor) | — (no rule can close it) |
+| G-07 | Port scans leave no record with the audit subcategories this endpoint has enabled | Generation (by configuration) | 65,535-port scan, 88 s, **0** attributable alerts | Audit configuration, then architecture (network sensor) | — (no rule can close it as configured) |
 | G-08 | Password spraying is not separable from ordinary failed logons | Detection | Rule 60204 accumulates 60122 events but never reads `SubStatus` | A rule | [`win_security_password_spray_nonexistent_accounts.yml`](../detections/sigma/win_security_password_spray_nonexistent_accounts.yml), [`win_security_targeted_password_guessing_valid_account.yml`](../detections/sigma/win_security_targeted_password_guessing_valid_account.yml) |
 | G-09 | Rule 92213 fires at level 15 on benign PowerShell behaviour | Detection | Same false positive ×1, ×5 and ×12 on three separate dates | Tuning | [`file_event_win_executable_dropped_excluding_psscriptpolicytest.yml`](../detections/sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml) |
 | G-10 | Security 1102 (audit log cleared) has never been generated, so its path is untested | Generation | The only one of twelve priority Event IDs with no lab data | A lab exercise | — (test first, then rule) |
@@ -52,6 +59,11 @@ reconnaissance phase
 ([`win_security_anonymous_logon_smb_null_session.yml`](../detections/sigma/win_security_anonymous_logon_smb_null_session.yml)) —
 see G-07.
 
+That is 12 files holding 21 rule documents, 7 of them correlations. Read the "Sigma rule in this
+repo" column above as *drafted*: all 21 parse cleanly under `sigma check` and convert under at
+least one backend, and none has been deployed to the lab manager, so none has ever matched a live
+event. A rule listed against a gap is a proposed answer to it, not a closed gap.
+
 ---
 
 ## G-01 — Security Event ID 4697 is generated, collected, and matched by nothing
@@ -60,7 +72,9 @@ see G-07.
 
 **Evidence.** `Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4697}` returned
 *"4697 A service was installed in the system"* at 2026-08-08 21:44:56 local, inside the exercise
-window. The Security channel is declared in the agent's `ossec.conf`, so the event was collected.
+window. The Security channel is declared in the agent's `ossec.conf` and the agent reported
+`connected`, so collection is expected — though it was not counted independently, for the reason
+given under the three layers above.
 A query of `wazuh-alerts-*` returned **0 documents** with Event ID 4697. The same real-world fact
 — a service was installed — *did* alert, through Event ID 7045 from the System channel.
 
@@ -182,9 +196,12 @@ rule deliberately carries informational severity: it exists to be counted, not t
 
 ---
 
-## G-07 — Port scans are invisible to a host-agent-only architecture
+## G-07 — Port scans leave no record with the audit subcategories this endpoint has enabled
 
-**Layer:** collection. This is an architecture gap, and no rule can close it.
+**Layer:** generation — nothing is written on the host, so there is nothing for the agent to
+collect and nothing for a rule to match. It is a generation gap *by configuration*, not by
+structure, and the distinction matters: Windows can record this, and this endpoint is not asking
+it to.
 
 **Evidence.** `nmap -sS -p- -T4 10.10.10.20` from Kali ran 88 seconds (00:47:17Z–00:48:45Z) and
 found 8 open ports (135, 139, 445, 3389, 5040, 5357, 7680, 49668) with 65,527 filtered. Wazuh
@@ -194,7 +211,19 @@ events: **zero** attributable to the scan. Repeated at smaller scale on 2026-09-
 because the Filtering Platform Connection subcategory is not audited — a deliberate choice, since
 it is very high volume.
 
-**Operational impact.** Reconnaissance against this endpoint is free and silent. Any claim that
+**What Windows could have written, and why it did not.** Those 65,527 filtered ports are packets
+the host firewall dropped, and the subcategory that records a dropped packet is *Audit Filtering
+Platform Packet Drop* (**5152** — the Windows Filtering Platform blocked a packet — and 5153).
+It is one of the subcategories this lab leaves off: the endpoint baseline enables ten, and Packet
+Drop is not among them, again for volume. So the correct statement is not that Windows records
+nothing about a scan, but that **this** endpoint records nothing about a scan. Nothing in this
+lab has ever measured what Packet Drop produces under an 88-second full-port scan, because it
+has never been switched on; the count is unknown, not zero. Note also that 5156 is *a connection
+was permitted* — it would have covered the 8 open ports, never the 65,527 filtered ones, so it
+was never the right subcategory for this measurement.
+
+**Operational impact.** As this endpoint is configured, reconnaissance against it is free and
+silent. Any claim that
 the lab "detects reconnaissance" would be false: what it detected on 2026-09-07 was not the scan
 but the **SMB null session** that followed it — Security 4624 for ANONYMOUS LOGON, type 3, NTLM,
 from `10.10.10.5`, flagged by Wazuh rule 92652 at level 6. That level-6 alert was the single most
@@ -204,14 +233,20 @@ were all the same false positive. It is reimplemented as a portable rule in
 which is a compensating detection for the phase *after* the scan — not a detection of the scan
 itself.
 
-**Remediation.** Two options, and the honest answer is the second:
-1. Enable Windows Filtering Platform auditing (5156/5157) and write a rule for many distinct
-   destination ports from one source IP in a short window — accepting the log volume on every
-   endpoint.
-2. Put a network sensor (Suricata or Zeek) on the segment, which is where this telemetry belongs.
+**Remediation.** Two options, and the second is still the answer:
+1. Enable *Audit Filtering Platform Packet Drop* (5152/5153) — the subcategory that actually
+   records a dropped inbound packet — and write a rule for many distinct destination ports from
+   one source IP in a short window, accepting the log volume on every endpoint. *Filtering
+   Platform Connection* (5156/5157) is the wrong subcategory for this: it describes connections
+   permitted and blocked at the ALE layer, not packets dropped at the filter. The volume cost of
+   Packet Drop on this endpoint is unmeasured and has to be measured before it is recommended.
+2. Put a network sensor (Suricata or Zeek) on the segment, which is where this telemetry belongs
+   and which also sees everything option 1 cannot — payloads, sessions, hosts other than this one.
 
 Neither is deployed yet. Option 2 is constrained by lab hardware: three VMs already use 20 GB of
-48 GB RAM, and the host disk was down to 46 GB free (96 % used) as of 2026-09-07.
+48 GB RAM, and the host disk was down to 46 GB free (96 % used) as of 2026-09-07. Option 1 is one
+`auditpol` line and a re-run of the 88-second scan; that is new lab work, not a rewrite of this
+document, and until it is done the host-side half of this gap stays a hypothesis.
 
 ---
 
@@ -220,8 +255,12 @@ Neither is deployed yet. Option 2 is constrained by lab hardware: three VMs alre
 **Layer:** detection.
 
 **Evidence.** On 2026-09-07 the existing correlation rule 60204 ("Multiple Windows Logon
-Failures", level 10, mapped to T1110) fired twice by accumulating rule 60122 events (20 at level
-5). It works on volume alone: it never reads `SubStatus`. The underlying 18 attempts from
+Failures", level 10, mapped to T1110) fired twice by accumulating rule 60122 events. It works on
+volume alone: it never reads `SubStatus`. The 60122 count for the exercise was 20 at level 5,
+aggregated across the whole run rather than per phase — and the run produced 22 × 4625 in total
+(15 + 3 over SMB, then 4 over RDP). 60122 fires once per 4625, so two failures are unaccounted
+for. That discrepancy has not been chased down, and it is itself a small coverage observation:
+nothing in the dashboard would have told me the two were missing. The 18 SMB attempts from
 `10.10.10.5` split into two very different phases:
 
 | Phase | Count | Status | SubStatus | Meaning | Window |
@@ -231,7 +270,10 @@ Failures", level 10, mapped to T1110) fired twice by accumulating rule 60122 eve
 
 The local lockout threshold is 10 attempts / 10 minutes, so the 15 attempts against non-existent
 accounts were never subject to it — lockout only counts failures against accounts that exist.
-`WorkstationName` was empty (`-`) on all 18, a signature of non-Windows tooling.
+`WorkstationName` was empty (`-`) on all 18. That is a fingerprint of *this tool*, not of
+non-Windows tooling as a class: on 2026-08-08, `smbclient` — Linux, same Kali VM, same endpoint —
+filled the same field with `KALI`. Treat an empty `WorkstationName` as something to identify, not
+as evidence that the client was not Windows.
 
 **Operational impact.** The alert that reaches the analyst says "multiple logon failures" and
 cannot distinguish fifteen guesses at five imaginary users from one employee who forgot a
@@ -250,9 +292,12 @@ short-window threshold.
   — 4625 with `SubStatus 0xC000006A`: the attacker has found a real account and is now aiming at
   it. Lower volume, higher meaning.
 
-The long-window variant (24 h, grouped by source IP) is the piece that is not optional and is
-still to be written: with the 2 s rate limiter in place, a short-window threshold alone is
-defeated by an attacker doing one attempt per hour.
+The long-window variant (24 h, grouped by source `IpAddress`, five distinct `TargetUserName`
+values) is the piece that is not optional, because with the 2 s rate limiter in place a
+short-window threshold alone is defeated by an attacker doing one attempt per hour. It is drafted
+as the third document inside
+[`win_security_password_spray_nonexistent_accounts.yml`](../detections/sigma/win_security_password_spray_nonexistent_accounts.yml)
+— drafted, not deployed: like every rule in that folder it has never run against the lab manager.
 
 ---
 
@@ -264,10 +309,12 @@ defeated by an attacker doing one attempt per hour.
 T1105) fires on Sysmon Event ID 11 for
 `C:\Users\<LAB_USER>\AppData\Local\Temp\__PSScriptPolicyTest_<random>.ps1` — a file that a signed
 `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe` writes to test its own execution
-policy. Reproduced on 2026-08-08 (×1), 2026-08-11 (×5) and 2026-09-07 (×12). In the 2026-08-08
-window of 82 alerts (levels 3→53, 4→7, 5→13, 8→5, 12→3, 15→1), that false positive was the single
-highest-severity alert in the system, while the simulated intrusion that mattered — a local user
-created, added to Administrators and deleted inside 8 seconds (4720 → 4732 → 4726) — surfaced at
+policy. Reproduced on 2026-08-08 (×1), 2026-08-11 (×5) and 2026-09-07 (×12). The 2026-08-08
+verification produced 82 alerts across its three phases (00:44:48Z–00:49:14Z: an 8-second
+generator script, an 88-second port scan, then five SMB logon failures), distributed by rule
+level 3→53, 4→7, 5→13, 8→5, 12→3, 15→1. That false positive was the single highest-severity
+alert in the whole set, while the simulated intrusion that mattered — a local user created,
+added to Administrators and deleted inside the 8-second script (4720 → 4732 → 4726) — surfaced at
 levels 8 and 12, below it.
 
 **Operational impact.** Severity measures how bad an event would be if real, not how likely it is
@@ -295,7 +342,7 @@ collected, therefore never tested against a rule.
 
 **Operational impact.** 1102 is one of the very few Windows events that is close to being an
 indicator on its own — a cleared Security log on a workstation has almost no benign explanation.
-Claiming coverage for T1070.001 without ever having produced the event would be exactly the kind
+Claiming coverage for T1685.005 (numbered T1070.001 before the v18 regrouping) without ever having produced the event would be exactly the kind
 of unverified claim the rest of this repository exists to avoid.
 
 **Remediation.** Two steps in order: (1) trigger it deliberately and confirm the full path
@@ -316,7 +363,11 @@ creation. Two authentication-only connections produced 4624 type 3 plus
 TerminalServices-RemoteConnectionManager EID 1149, still no type 10. The only logon type 10 of
 the entire exercise appeared at 18:35:09, when a full graphical session actually established:
 4624 type 10, `AuthenticationPackage Negotiate`, `LogonProcessName User32`, with
-TerminalServices-LocalSessionManager 41 → 42 → 21 → 22 → 24. The RDP context — including
+TerminalServices-LocalSessionManager 41 → 42 → **21** (session logon) → **22** (shell start
+notification). The session was then disconnected at 18:36:49, which is where the 24 and 40 of
+that exercise come from — they belong to the teardown, not to the establishment. Worth being
+exact about, because 22 is routinely described as a reconnection and is not: reconnection is
+EID 25, which this lab has never produced. The RDP context — including
 `Source Network Address 10.10.10.5` — lives in those TerminalServices channels, not in the 4625.
 
 **Operational impact.** Any detection built on "RDP brute force = 4625 logon type 10" misses every
@@ -381,8 +432,9 @@ lifetime when reconstructing a timeline.
 
 One further method note belongs here. An apparent gap in 4624/4672 (4 generated / 2 alerted and
 3 / 1) was **withdrawn** after widening the query range to 17:22:20–17:23:00 revealed 8 × 4624
-and 4 × 4672, every one alerting individually: each host-driven invocation produces a *pair* of
-4624 events, and the pairs were being cut in half by the window boundary. Only gaps that survived
+and 4 × 4672, every one alerting individually: the four host-driven invocations in that window
+each produce a *pair* of 4624 events plus one 4672, and the pairs were being cut in half by the
+window boundary. Only gaps that survived
 a widened window — 4648, 4798/4799, Sysmon 3, Sysmon 22 — are reported above. A false gap in a
 coverage report costs as much credibility as a false positive costs an analyst's shift.
 
@@ -404,12 +456,23 @@ tunnelling seen on the wire, or C2 protocol behaviour is outside what I have mea
 
 **2. No domain controller, therefore no Kerberos or directory telemetry.** `DC01` is planned
 (Windows Server, 4 GB / 2 vCPU, `10.10.10.5`) and **has not been created**. Everything measured
-here is local-account authentication on a workgroup endpoint. That means no 4768 / 4769 / 4776,
+here is local-account authentication on a workgroup endpoint. That means no 4768 / 4769 / 4771,
 no Kerberoasting or AS-REP roasting, no Golden/Silver Ticket activity, no DCSync, no delegation
 abuse, no Group Policy telemetry, no cross-host lateral movement inside a domain, and no
 directory-level account management events. A practical detail already waiting: DHCP handed the
 attacker VM `10.10.10.5`, the address reserved in the plan for the domain controller — a
 documented collision to resolve before stage 2.
+
+One event usually listed alongside those does **not** belong in this blind spot: **4776**, *the
+computer attempted to validate the credentials for an account*. That is the NTLM
+credential-validation record, and for local accounts it is written by the local machine's MSV1_0
+package, not by a domain controller. It is missing here for a much cheaper reason — *Audit
+Credential Validation* is not one of the ten subcategories this endpoint enables. It is the
+cheapest addition this lab could make to the attack path it actually measured: every NTLM logon
+of 2026-09-07 — the 18 SMB attempts of G-08, and the valid credential supplied after them — ran
+straight through the check 4776 describes. The same correction applies to any
+query written against 4776 on this endpoint: it will return nothing today, and that is
+configuration, not absence of the event class.
 
 **3. No email or phishing telemetry.** There is no mail server, no gateway and no mailbox in the
 lab, so the most common real-world initial-access vector produces nothing to detect here.
@@ -447,7 +510,13 @@ and no writeup in this repository claims to be.
 exercise the agent reported roughly 2,100 events to the manager (2,098 counted at verification)
 and 835 alerts remained in the index for that endpoint — more than half the telemetry never
 became queryable, because it matched no rule at level ≥ 3. In the 2026-08-11 exercise the same
-shape appeared at smaller scale: 167 events generated → 27 alerts. Every coverage statement in
+shape appeared at smaller scale: 167 events generated → 27 alerts on the narrow observation
+window, which becomes **172 → 36** once the two rows the same exercise retracted (4624 and 4672,
+halved by the window boundary — see the method note above) are recounted over
+17:22:20–17:23:00. The narrow pair is kept here only because it is the one the per-channel tables
+were originally built on; the widened pair supersedes it. Neither is settled: one row inside both
+totals (Sysmon 11, 4 generated / 5 alerted) is arithmetically impossible for a single-event rule
+and has not been recounted. Every coverage statement in
 this document is therefore bounded by the ruleset, not by what the endpoint produced. Absence of
 an alert is not evidence of absence of activity.
 

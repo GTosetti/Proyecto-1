@@ -132,7 +132,16 @@ if ($blocks -ne '') {
     $idx = $content.LastIndexOf('</ossec_config>')
     if ($idx -lt 0) { throw 'ossec.conf has no </ossec_config>. Inspect it by hand.' }
     $new = $content.Substring(0, $idx) + $blocks + $content.Substring($idx)
-    Set-Content -Path $conf -Value $new -Encoding UTF8
+
+    # NOT Set-Content -Encoding UTF8. Under Windows PowerShell 5.1 - the version
+    # this script pins and the version the lab runs - that writes a UTF-8 byte
+    # order mark, and a BOM in front of the first element of an XML file is a
+    # known way to make a parser reject it. The failure would look like "the
+    # agent installed fine and then died", immediately after the step whose
+    # whole purpose is to make Sysmon and PowerShell collection work. This call
+    # writes UTF-8 with no BOM.
+    [System.IO.File]::WriteAllText($conf, $new, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Ok 'ossec.conf rewritten (UTF-8, no BOM)'
 }
 
 # ===========================================================================
@@ -144,7 +153,17 @@ Restart-Service -Name 'WazuhSvc' -Force -ErrorAction SilentlyContinue
 Set-Service    -Name 'WazuhSvc' -StartupType Automatic
 Start-Service  -Name 'WazuhSvc' -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 10
-Write-Ok "Service state: $((Get-Service WazuhSvc).Status)"
+
+# The service state is the point of this step, so it is checked rather than
+# printed. A stopped WazuhSvc after a successful MSI install is exactly the
+# shape of the ossec.conf problem above, and a script that reports it in green
+# text and carries on is how an endpoint ends up configured, enrolled and
+# silent.
+$state = (Get-Service WazuhSvc).Status
+if ($state -ne 'Running') {
+    throw "WazuhSvc is '$state', not 'Running'. Check $AgentDir\ossec.log - a malformed ossec.conf stops the service at startup. The original file is at $conf.bak."
+}
+Write-Ok "Service state: $state"
 
 # ===========================================================================
 # 5 - Verification

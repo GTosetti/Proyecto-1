@@ -45,8 +45,8 @@ Times as recorded by the endpoint's Security channel on 2026-09-07.
 ```
 1.  TITLE
     Successful SMB authentication from 10.10.10.5 to WIN11-VICTIMA using a local
-    administrator account, after username enumeration and password guessing; the same
-    source later opened a full RDP session.
+    administrator account, after a failed username-enumeration and guessing phase; the
+    same source later opened a full RDP session.
 
 2.  DETECTED BY
     Wazuh rule 60204 level 10 "Multiple Windows Logon Failures" (T1110), fired twice by
@@ -61,12 +61,17 @@ Times as recorded by the endpoint's Security channel on 2026-09-07.
 
 4.  IDENTITY
     Enumeration phase targeted five accounts that do not exist on this host (admin,
-    administrador, backup, sqlsvc, helpdesk). The account that was actually compromised is
+    administrador, backup, sqlsvc, helpdesk). The account that was then authenticated to is
     the local lab account <LAB_USER>, a member of the local Administrators group.
+    Stated plainly, because the timeline below would otherwise imply it: the guessing phase
+    did not succeed. All three attempts against <LAB_USER> failed, and a known-valid
+    credential for that account was then supplied to the tool deliberately, to generate the
+    post-authentication telemetry. The valid access is real; the password was not obtained.
 
 5.  SOURCE
-    10.10.10.5, NTLM, WorkstationName empty ("-") on all 18 attempts — a signature of
-    non-Windows tooling rather than a Windows client. This address has no legitimate reason
+    10.10.10.5, NTLM, WorkstationName empty ("-") on all 18 attempts — a fingerprint of the
+    client tool, not of its operating system: smbclient, from this same VM against this same
+    host on 2026-08-08, filled the field with KALI. This address has no legitimate reason
     to authenticate to this endpoint. Caveat: 10.10.10.5 is also the address reserved for the
     planned DC01, so IP-based attribution here has an expiry date.
 
@@ -80,13 +85,15 @@ Times as recorded by the endpoint's Security channel on 2026-09-07.
               5 distinct names. Never subject to the lockout policy.
     18:31:13-18:31:16  3 x 4625, SubStatus 0xC000006A (account exists, wrong password)
               against <LAB_USER>. Enumeration has become targeted.
-    18:31:19  Security 4624, logon type 3, NTLM, from 10.10.10.5 — AUTHENTICATION SUCCEEDED.
-              Shares enumerated immediately after: ADMIN$, C$, IPC$ (READ).
+    18:31:19  Security 4624, logon type 3, NTLM, from 10.10.10.5 — authentication succeeded,
+              on the credential supplied at line 4, not on a guess. Shares enumerated
+              immediately after: ADMIN$, C$, IPC$ (READ).
     18:33:28-18:33:29  4 x 4625 logon type 3 from the same source — RDP attempts, not SMB
               (with NLA a failed RDP logon is type 3, corroborated by TS-RemoteConnection-
               Manager 1149 with Source Network Address 10.10.10.5).
     18:35:09  Security 4624 logon type 10, Negotiate, LogonProcessName User32 — full RDP
-              session established. LocalSessionManager 41 -> 42 -> 21 -> 22 -> 24.
+              session established. LocalSessionManager 41 -> 42 -> 21 (logon) -> 22 (shell
+              start). The session's 24 (disconnect) follows at 18:36:49.
 
 7.  EVIDENCE
     Alerts: 60122 level 5 x20; 60204 level 10 x2; 92652 level 6 x1; 92657 level 6 x3.
@@ -103,20 +110,23 @@ Times as recorded by the endpoint's Security channel on 2026-09-07.
     discovery, via the null session) -> T1110.001 (password guessing) -> T1078.003 (valid
     local account) -> T1021.001 (RDP). The field that decided it is SubStatus: the
     0xC0000064 -> 0xC000006A transition at 18:31:13 is the point at which blind enumeration
-    became a targeted attack on a known account, and 3 minutes later it succeeded.
+    became a targeted attack on a known account. What followed at 18:31:19 was not that
+    attack succeeding — see line 4 — so T1078.003 here means a valid credential used, not a
+    credential obtained.
     Note on the failure spacing: the ~2 s gap between attempts is Windows'
     EnableAuthRateLimiter (InvalidAuthenticationDelayTimeInMs = 2000, default on 24H2+),
     not the attacker's pacing. Do not profile the tooling from it.
 
 9.  BLAST RADIUS
-    The compromised account is a local administrator and ADMIN$ / C$ were reachable, so
-    assume full control of WIN11-VICTIMA, including credential material cached on it.
+    The account used is a local administrator and ADMIN$ / C$ were reachable, so assume full
+    control of WIN11-VICTIMA, including credential material cached on it.
     NOT KNOWN: (a) what was executed inside the RDP session — process activity for that
     LogonId has not yet been enumerated; (b) whether other hosts on 10.10.10.0/24 were
     touched, because there is no network sensor and a 65,535-port scan produced zero alerts
-    in an earlier test; (c) whether anything persisted — note that Security 4697 "a service
-    was installed" reaches the SIEM but matches no rule, so service installation would be
-    silent here and must be checked on the host via 7045.
+    in an earlier test; (c) whether anything persisted — Security 4697 "a service was
+    installed" is generated on this host but matches no rule in the SIEM, so a service
+    installation would be silent in the queue and has to be checked on the host, via 4697
+    itself or System 7045.
 
 10. ASK
     Requesting: (1) approval to isolate WIN11-VICTIMA from SOCLAB; (2) a credential reset for
@@ -128,7 +138,8 @@ Times as recorded by the endpoint's Security channel on 2026-09-07.
 
 *Framing note, kept because it matters more than the note itself: this incident was an
 adversary-emulation exercise I ran against my own lab and then investigated. The same person
-executed and analysed it, knowing the answer in advance. The escalation note is written as it
+executed and analysed it, knowing the answer in advance, and the credential at 18:31:19 was
+one I already held rather than one the tool recovered. The escalation note is written as it
 would be for a real alert, but it is not evidence of unscripted casework.*
 
 ---
@@ -156,6 +167,11 @@ would be for a real alert, but it is not evidence of unscripted casework.*
   that do not exist, then 3 against one that does" is.
 - **Protocol claimed without corroboration.** Logon type 3 does not mean SMB — under NLA a
   failed RDP logon is type 3 too. Name the protocol only with 1149 / session events behind it.
+- **Failures followed by a success written as a success *caused by* the failures.** Three bad
+  passwords and then a good one is a sequence, not a mechanism. A 4625 burst followed by a
+  4624 does not record where the working credential came from, and a note that says "the
+  password was guessed" is answering a question the log did not answer. Write what the events
+  show and name the gap.
 - **Severity borrowed from the rule level.** Twelve level 15s in this exercise were all false
   positives; the most useful alert of the reconnaissance phase was a level 6.
 - **A silent blast-radius line.** If the process activity in the session has not been

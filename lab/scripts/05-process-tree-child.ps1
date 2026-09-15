@@ -11,12 +11,16 @@
     WHY IT EXISTS
       It is the leaf of the tree launched by 04-process-tree-generate.ps1 and is
       not meant to be run on its own. Sysmon 3 and Sysmon 22 are included
-      because the Windows Security log has no equivalent for either: network
-      connections and DNS queries are among the things native auditing simply
-      does not record at the process level. Both were also found to have zero
-      detection coverage in the default ruleset used in this lab, despite being
-      ingested - which is exactly the kind of gap this exercise is designed to
-      surface.
+      because neither has an equivalent in the Security channel AS THIS LAB IS
+      CONFIGURED. Be precise about that, because it is the kind of sentence an
+      interviewer tests: Windows can record an outbound connection with the
+      process image and PID, in 5156, but that is the Filtering Platform
+      Connection subcategory and it is deliberately off here for volume. A DNS
+      query has no Security-channel equivalent at all - the native record is in
+      Microsoft-Windows-DNS-Client/Operational, a channel this lab does not
+      collect. Both Sysmon IDs were also found to have zero detection coverage
+      in the default ruleset used here, despite being ingested - which is
+      exactly the kind of gap this exercise is designed to surface.
 
     No credential appears in this file.
 #>
@@ -60,6 +64,9 @@ try {
 # produces here: in this lab it generated a process-creation event matched by a
 # catch-all rule at the lowest alert level, identical to the alert produced by a
 # routine system service.
+#
+# It is launched with no arguments, so its command line carries no marker. That
+# is why the collector searches for this one by image name as well as by marker.
 $who = & "$env:SystemRoot\System32\whoami.exe"
 Write-Host "  [child] whoami -> $who"
 
