@@ -129,7 +129,7 @@ Scripts verify their own end state. A telemetry baseline script that appears to 
 - Configure NTP on both VMs and pin dashboard queries to `data.win.system.systemTime` (and to `UtcTime` for Sysmon 3 and 22).
 - Stage 2: build `DC01`, after resolving the DHCP collision on 10.10.10.5.
 - Decide the network-visibility question honestly: enable Audit Filtering Platform Packet Drop (5152/5153) and accept the volume, or add a network sensor to the segment. Either way, measure the 88-second scan again afterwards rather than assuming the answer.
-- CompTIA Security+ SY0-701 in progress. First diagnostic on objectives 1.1–1.2 scored 52% (13/25) once multiple-response items were graded all-or-nothing as CompTIA grades them; 82% on definitions against 29% on classifying examples, which located the gap precisely.
+- CompTIA Security+ SY0-701 in progress. The method is the part worth stating here: every objective gets written out in my own words before I sit a diagnostic, because an explanation I cannot finish is a knowledge gap with an address. It held 5 for 5 against the first diagnostic — every blank left in my notes came back as a wrong answer. Recorded as lesson L-22 in [`docs/04-lessons-learned.md`](docs/04-lessons-learned.md).
 
 ---
 
