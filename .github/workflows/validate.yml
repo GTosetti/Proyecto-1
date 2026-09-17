@@ -186,17 +186,22 @@ jobs:
       - name: Lint detections/ and .github/
         run: |
           set -euo pipefail
-          targets=""
+          # An array, not a string. The expansion has to split into separate path
+          # arguments, and "${targets[@]}" is how bash does that without an unquoted
+          # expansion - shellcheck SC2086, which actionlint enforces over every run
+          # block on the runner even though a local actionlint without shellcheck
+          # installed will not see it.
+          targets=()
           for d in detections .github; do
-            if [ -d "$d" ]; then targets="$targets $d"; fi
+            if [ -d "$d" ]; then targets+=("$d"); fi
           done
-          if [ -z "$targets" ]; then
+          if [ "${#targets[@]}" -eq 0 ]; then
             echo "No target directories present."
             exit 0
           fi
           # Settings live in .yamllint at the repository root, so a local run and a
           # CI run enforce exactly the same rules. If it passes here it passes locally.
-          yamllint -f github -s -c .yamllint $targets
+          yamllint -f github -s -c .yamllint "${targets[@]}"
 
       # yamllint proves the workflow is well-formed YAML. It does NOT prove GitHub will
       # accept it: a job-level env block referencing the runner context is valid YAML and
