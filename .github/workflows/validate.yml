@@ -45,6 +45,13 @@ jobs:
   secret-scan:
     name: secret-scan (gitleaks)
     runs-on: ubuntu-latest
+    env:
+      # Reports are written OUTSIDE the checkout. A SARIF report embeds the rule
+      # patterns it was produced from, so a report left in the working tree is
+      # matched by the very rules that wrote it, and the working-tree scan fails
+      # on the history scan's own output. Measured: 2 findings, both inside
+      # gitleaks-history.sarif, neither a secret.
+      REPORT_DIR: ${{ runner.temp }}/gitleaks
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v4
@@ -67,17 +74,19 @@ jobs:
             echo "FAIL: .gitleaks.toml is missing; the lab's own rules would not be applied."
             exit 1
           fi
+          mkdir -p "${REPORT_DIR}"
           gitleaks detect \
             --source . \
             --config .gitleaks.toml \
             --redact \
             --exit-code 1 \
             --report-format sarif \
-            --report-path gitleaks-history.sarif
+            --report-path "${REPORT_DIR}/gitleaks-history.sarif"
 
       - name: Scan working tree (including files never committed to this branch)
         run: |
           set -euo pipefail
+          mkdir -p "${REPORT_DIR}"
           gitleaks detect \
             --source . \
             --config .gitleaks.toml \
@@ -85,14 +94,14 @@ jobs:
             --redact \
             --exit-code 1 \
             --report-format sarif \
-            --report-path gitleaks-worktree.sarif
+            --report-path "${REPORT_DIR}/gitleaks-worktree.sarif"
 
       - name: Upload gitleaks reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gitleaks-reports
-          path: gitleaks-*.sarif
+          path: ${{ runner.temp }}/gitleaks/*.sarif
           if-no-files-found: ignore
           retention-days: 7
 

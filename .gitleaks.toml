@@ -48,7 +48,14 @@ regexes = [
   '''\.\.\.''',
 ]
 paths = [
+  # The scanner's own configuration: it necessarily contains the shapes it hunts for.
   '''^\.gitleaks\.toml$''',
+  # A SARIF report embeds the patterns of the rules that produced it, so a report left
+  # inside the scanned tree is flagged by those same rules - the scanner reporting its
+  # own output. Measured: the working-tree scan found 2 "leaks", both inside
+  # gitleaks-history.sarif, neither a secret. CI now writes reports to the runner temp
+  # directory; this covers a hand-run from the repository root.
+  '''(^|/)gitleaks-[A-Za-z0-9_.-]*\.sarif$''',
 ]
 
 # ---------------------------------------------------------------------------
