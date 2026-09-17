@@ -129,6 +129,24 @@ regex = '''(?i)[a-z]:\\+users\\+([a-z0-9._ -]{2,64})'''
 secretGroup = 1
 tags = ["opsec", "host-identity"]
 
+  # Windows ships three profile directories that belong to nobody's account:
+  # Public, Default and All Users. C:\Users\Public in particular is
+  # load-bearing content here - it is a directory attackers write to, so it appears
+  # in detection rules, in the gap analysis and in the process-tree investigation,
+  # 38 times across the repository. Without this exemption the rule reports its own
+  # subject matter and the job can never pass, which is the failure mode that trains
+  # people to ignore a scanner.
+  #
+  # Scoped deliberately: only these three names, and only when the name ENDS there,
+  # so C:\Users\publicity or an account really called defaultadmin still reports.
+  [rules.allowlist]
+  regexTarget = "match"
+  regexes = [
+    '''(?i)[a-z]:\\+users\\+public(?:$|[\\\s"'`,.;:)\]}|])''',
+    '''(?i)[a-z]:\\+users\\+default(?:$|[\\\s"'`,.;:)\]}|])''',
+    '''(?i)[a-z]:\\+users\\+all users(?:$|[\\\s"'`,.;:)\]}|])''',
+  ]
+
 # ---------------------------------------------------------------------------
 # 7 - An account name in front of a host
 # ---------------------------------------------------------------------------
