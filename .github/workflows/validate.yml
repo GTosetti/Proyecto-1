@@ -45,13 +45,6 @@ jobs:
   secret-scan:
     name: secret-scan (gitleaks)
     runs-on: ubuntu-latest
-    env:
-      # Reports are written OUTSIDE the checkout. A SARIF report embeds the rule
-      # patterns it was produced from, so a report left in the working tree is
-      # matched by the very rules that wrote it, and the working-tree scan fails
-      # on the history scan's own output. Measured: 2 findings, both inside
-      # gitleaks-history.sarif, neither a secret.
-      REPORT_DIR: ${{ runner.temp }}/gitleaks
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v4
@@ -74,6 +67,12 @@ jobs:
             echo "FAIL: .gitleaks.toml is missing; the lab's own rules would not be applied."
             exit 1
           fi
+          # Reports go OUTSIDE the checkout: a SARIF report embeds the rule patterns
+          # that produced it, so a report left in the working tree is matched by the
+          # very rules that wrote it. RUNNER_TEMP is an environment variable the runner
+          # always sets; the runner context is NOT available in a job-level env block,
+          # which is what actionlint catches and what broke this workflow once.
+          REPORT_DIR="${RUNNER_TEMP}/gitleaks"
           mkdir -p "${REPORT_DIR}"
           gitleaks detect \
             --source . \
@@ -86,6 +85,12 @@ jobs:
       - name: Scan working tree (including files never committed to this branch)
         run: |
           set -euo pipefail
+          # Reports go OUTSIDE the checkout: a SARIF report embeds the rule patterns
+          # that produced it, so a report left in the working tree is matched by the
+          # very rules that wrote it. RUNNER_TEMP is an environment variable the runner
+          # always sets; the runner context is NOT available in a job-level env block,
+          # which is what actionlint catches and what broke this workflow once.
+          REPORT_DIR="${RUNNER_TEMP}/gitleaks"
           mkdir -p "${REPORT_DIR}"
           gitleaks detect \
             --source . \
@@ -192,6 +197,23 @@ jobs:
           # Settings live in .yamllint at the repository root, so a local run and a
           # CI run enforce exactly the same rules. If it passes here it passes locally.
           yamllint -f github -s -c .yamllint $targets
+
+      # yamllint proves the workflow is well-formed YAML. It does NOT prove GitHub will
+      # accept it: a job-level env block referencing the runner context is valid YAML and
+      # invalid Actions, and the run then fails in 0 seconds with no jobs at all - which
+      # means the other five checks silently never execute. That happened to this file.
+      # actionlint applies the real Actions rules (context availability, shellcheck over
+      # every run block, action input names), so the pipeline can catch the one class of
+      # defect that stops the pipeline from running.
+      - name: Lint the workflows themselves
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          tar -xzf actionlint.tar.gz actionlint
+          ./actionlint -color
 
   # Prevents: shipping an ATT&CK Navigator layer that the Navigator refuses to open,
   # or that opens empty. The layer is the coverage claim of this repository in visual
