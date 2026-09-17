@@ -43,7 +43,7 @@ So the rule for rules here is:
 > in layer 1 or layer 2, a rule cannot fix it, and pretending otherwise is worse than leaving the
 > gap open — it puts a green tick over a blind spot.
 
-Two consequences, both visible in this folder: it is small — 21 rule documents, each traceable to a
+Two consequences, both visible in this folder: it is small — 25 rule documents, each traceable to a
 dated measurement — and it contains a section for gaps that are deliberately **not** being closed
 with a rule.
 
@@ -120,7 +120,7 @@ Validation status vocabulary — used strictly:
 | `validated` | The rule was deployed, the source activity was re-run, and a query returned the alert. The entry records the date and the query. |
 | `tuning` | Deployed and firing, but its false-positive rate has not been measured yet, so its level is not trusted. |
 
-`detections/sigma/` holds **12 files containing 21 rule documents**, seven of which are correlation
+`detections/sigma/` holds **15 files containing 25 rule documents**, eight of which are correlation
 rules. A file holds more than one document when a correlation needs its base events declared
 alongside it; the `Docs` column gives the count, and the base documents ship at level
 `informational` because they exist to be counted, not triaged.
@@ -138,10 +138,14 @@ alongside it; the `Docs` column gives the count, and the base documents ship at 
 | [`sigma/win_security_successful_interactive_rdp_session.yml`](sigma/win_security_successful_interactive_rdp_session.yml) | 3 (1 correlation) | 4624 logon type 10 and TerminalServices-LocalSessionManager session events as base documents, correlated into "an interactive RDP session was actually established" rather than "someone authenticated" | T1021.001, T1078.003 | `drafted` |
 | [`sigma/net_connection_win_script_interpreter_external_dest.yml`](sigma/net_connection_win_script_interpreter_external_dest.yml) | 1 | Sysmon Event ID 3: a shell or scripting interpreter opening an outbound connection to an address outside the private, loopback, link-local and multicast ranges | T1071.001, T1059.001 | `drafted` |
 | [`sigma/dns_query_win_unexpected_process.yml`](sigma/dns_query_win_unexpected_process.yml) | 1 | Sysmon Event ID 22: a DNS query issued by a discovery binary or a simple desktop application, neither of which has a reason to resolve a name | T1071.004, T1036.003 | `drafted` |
-| [`sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml`](sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml) | 1 | Sysmon Event ID 11: an executable or script written to a user-writable folder, with the one false positive this lab measured three times (`__PSScriptPolicyTest_*.ps1`) excluded by writer path, prefix and extension together | T1105 | `drafted` |
+| [`sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml`](sigma/file_event_win_executable_dropped_excluding_psscriptpolicytest.yml) | 1 | Sysmon Event ID 11: an executable or script written to a user-writable folder, with the one false positive this lab measured four times (`__PSScriptPolicyTest_*.ps1`) excluded by writer path, prefix and extension together | T1105 | `drafted` |
 
-**Status, stated plainly:** all 21 documents pass `sigma check` with 0 errors, and they convert — 7
-files under the `opensearch_lucene` backend, the 4 files carrying `stats` correlations under `esql`,
+| [`sigma/proc_creation_win_lolbin_remote_download.yml`](sigma/proc_creation_win_lolbin_remote_download.yml) | 1 | `certutil`, `bitsadmin` or `regsvr32` pulling a file from an `http`/`https` URL — the LOLBin download. Written because Defender caught the `certutil` and `regsvr32` command lines on 2026-09-17 but its verdict never reached the SIEM | T1105, T1218.010 | `drafted` |
+| [`sigma/dns_query_win_high_entropy_subdomain.yml`](sigma/dns_query_win_high_entropy_subdomain.yml) | 1 | Sysmon Event ID 22: a DNS query whose leftmost label is 20+ chars of base32/base64 alphabet, the shape of data over DNS, with a CDN allowlist. Closes the Sysmon 22 gap re-measured on 2026-09-17 (5 beacons, 0 alerts) | T1071.004, T1048 | `drafted` |
+| [`sigma/win_security_local_group_enumeration_burst.yml`](sigma/win_security_local_group_enumeration_burst.yml) | 2 (1 correlation) | Security 4798/4799 as an informational base event filtered of the system SIDs, plus a `event_count` correlation of 10+ under one `SubjectLogonId` in 60 s — the SharpHound-shaped enumeration. Closes the 4798/4799 gap (7 events, 0 alerts, 2026-09-17) | T1069.001, T1087.001 | `drafted` |
+
+**Status, stated plainly:** all 25 documents pass `sigma check` with 0 errors, and they convert — 9
+files under the `opensearch_lucene` backend, the 5 files carrying `stats` correlations under `esql`,
 and the temporal RDP rule under `open_search_ppl` once field aliases are applied. **None of them has
 been deployed to the lab manager, so none is `validated` in the sense defined above, and the count of
 techniques detected by a rule of mine stays at 0.** Every rule derives its log source, fields and
@@ -156,12 +160,11 @@ commands and the measurement behind each rule — are in
 
 ### Backlog — measured gaps with no rule yet
 
-Each row is a hole that was demonstrated with a query, not a suspicion. These three are what is left
-after the twelve files above; every other measured gap now has a drafted rule.
+Each row is a hole that was demonstrated with a query, not a suspicion. These two are what is left
+after the fifteen files above; every other measured gap now has a drafted rule.
 
 | Gap (measured) | Evidence | Proposed detection | ATT&CK |
 |---|---|---|---|
-| Security 4798/4799 (local group membership enumeration) produce no alert | 2 events generated, 0 alerts, confirmed against a widened window, 2026-08-11 | Several 4798/4799 under the same `SubjectLogonId` in a short window — the local enumeration signature. The drafted discovery-burst rule does not cover this: it reads process creation, and 4798/4799 are written without a process | T1087 |
 | Security 4648 (logon with explicit credentials) produces no alert | 1 event generated, 0 alerts, confirmed against a widened window, 2026-08-11 | Alert where `SubjectUserName` differs from `TargetUserName` and the calling process is not a known administrative tool | T1078.003 |
 | Security 1102 (audit log cleared) has never been generated, so its detection path is untested | No 1102 has ever been produced in this lab and no query has been run against it — the gap is the absence of the exercise, not the absence of a query result | Alert on 1102 unconditionally at high severity. The task is first a **lab** task: trigger it deliberately and confirm the path end to end. The `base-limpia` snapshot exists for the rollback | T1685.005 (numbered T1070.001 before the v18 regrouping) |
 

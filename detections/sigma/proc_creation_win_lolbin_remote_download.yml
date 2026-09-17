@@ -1,0 +1,54 @@
+title: Remote File Download via a Signed Microsoft LOLBin
+id: 7c4a1f22-3e5b-4d81-9a6e-2f0b7c9d4e10
+status: experimental
+description: |
+    Detects certutil, bitsadmin and regsvr32 being used to pull a file from a remote URL - the
+    "living off the land" download that avoids a browser and often avoids proxy inspection.
+    Motivated by a lab measurement (2026-09-17): the command lines
+    `certutil -urlcache -split -f https://...` and `regsvr32 /s /n /u /i:https://.../x.sct scrobj.dll`
+    were both caught by Microsoft Defender in real time (Trojan:Win32/Ceprolad.A and
+    Trojan:Win32/Powemet.A!attk) - but Defender's verdict never reached the SIEM because its
+    operational channel is not ingested, and no SIEM-side rule matched the command line either.
+    This rule exists so the download is detected from the endpoint's own process telemetry,
+    independently of whether Defender is running, tampered with, or forwarded.
+references:
+    - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+    - https://lolbas-project.github.io/lolbas/Binaries/Regsvr32/
+    - https://attack.mitre.org/techniques/T1105/
+    - https://attack.mitre.org/techniques/T1218/010/
+author: Guillermo Tosetti
+date: 2026-09-17
+modified: 2026-09-17
+tags:
+    - attack.command-and-control
+    - attack.t1105
+    - attack.stealth
+    - attack.t1218.010
+logsource:
+    category: process_creation
+    product: windows
+detection:
+    certutil:
+        Image|endswith: '\certutil.exe'
+        CommandLine|contains|all:
+            - '-urlcache'
+            - 'http'
+    certutil_verifyctl:
+        Image|endswith: '\certutil.exe'
+        CommandLine|contains|all:
+            - '-verifyctl'
+            - 'http'
+    bitsadmin:
+        Image|endswith: '\bitsadmin.exe'
+        CommandLine|contains: '/transfer'
+    regsvr32_remote:
+        Image|endswith: '\regsvr32.exe'
+        CommandLine|contains: '/i:http'
+    condition: 1 of them
+falsepositives:
+    - certutil is used legitimately by some enterprise certificate-enrolment scripts, but almost
+      never with a URL. Filter by the specific scripts if any exist in the environment.
+    - bitsadmin /transfer is used by a few legacy software updaters. If one is present, exclude it
+      by its full parent-image path, never by the certutil/bitsadmin image alone.
+    - regsvr32 /i:http has no benign use observed in this lab and is a strong signal on its own.
+level: high

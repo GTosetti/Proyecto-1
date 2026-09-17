@@ -38,7 +38,7 @@ description: |
     not written yet.
     The level is deliberately medium, not high. Dropping a file into %TEMP% is a precondition of
     an intrusion, not proof of one, and this lab is the evidence for what happens when that
-    distinction is ignored: a maximum-severity rule that fired 18 times on benign activity and 0
+    distinction is ignored: a maximum-severity rule that fired 21 times on benign activity and 0
     times on anything real teaches an analyst to stop reading level 15.
 references:
     - https://attack.mitre.org/techniques/T1105/

@@ -1,0 +1,58 @@
+title: Burst of Local Group Membership Enumeration
+id: a3f81c60-2b4d-4e19-8c73-6a5b0d2f1e34
+status: experimental
+description: |
+    A single logon session enumerating many local group memberships in a short window is the
+    reconnaissance a tool like SharpHound performs to map who is privileged before choosing a
+    target. Motivated by a lab measurement (2026-09-17): during an emulated intrusion,
+    `net localgroup Administrators` and related discovery produced 5x event 4799 and 2x event 4798,
+    and raised zero alerts. Both event IDs are collected by the agent and had no detection coverage.
+    Single enumerations are extremely common from legitimate Windows components, so this rule fires
+    on the BURST, counted per logon session, not on any individual event.
+references:
+    - https://attack.mitre.org/techniques/T1069/001/
+    - https://attack.mitre.org/techniques/T1087/001/
+author: Guillermo Tosetti
+date: 2026-09-17
+modified: 2026-09-17
+tags:
+    - attack.discovery
+    - attack.t1069.001
+    - attack.t1087.001
+logsource:
+    product: windows
+    service: security
+detection:
+    enumeration:
+        EventID:
+            - 4798   # a user's local group membership was enumerated
+            - 4799   # a security-enabled local group membership was enumerated
+    filter_system:
+        # The machine account and LOCAL SERVICE / NETWORK SERVICE enumerate groups constantly as
+        # part of normal operation. Scope them out; a real recon burst runs under a user session.
+        SubjectUserSid:
+            - 'S-1-5-18'
+            - 'S-1-5-19'
+            - 'S-1-5-20'
+    condition: enumeration and not filter_system
+falsepositives:
+    - Management consoles (mmc.exe), Server Manager and some inventory agents enumerate groups in
+      bursts. If one runs under a user session, exclude it by CallerProcessName once identified.
+    - The first interactive logon after boot can produce a small cluster. Set the threshold above
+      that baseline; 10 in 60 seconds cleared it in this lab.
+level: medium
+---
+title: Burst of Local Group Membership Enumeration (correlation)
+id: c5d92a18-4f6b-4c30-91e2-7b8a3d0f5c46
+status: experimental
+description: Fires when one logon session generates 10 or more local-group enumeration events within a minute.
+correlation:
+    type: event_count
+    rules:
+        - a3f81c60-2b4d-4e19-8c73-6a5b0d2f1e34
+    group-by:
+        - SubjectLogonId
+    timespan: 1m
+    condition:
+        gte: 10
+level: high

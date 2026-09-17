@@ -1,0 +1,52 @@
+title: DNS Query With a Long High-Entropy Leftmost Label
+id: 9b2e6d54-8f13-4a27-b0c5-1d3e5f7a9c22
+status: experimental
+description: |
+    Detects a DNS query whose leftmost label is long and looks base32/base64-encoded, which is the
+    shape of data smuggled out over DNS (tunnelling or beaconing with an encoded payload in the
+    subdomain). Motivated by a lab measurement (2026-09-17): five lookups of the form
+    `<base64>.SIMFASE1.example.com` were issued during an emulated intrusion, produced five Sysmon
+    event ID 22 records, and raised zero alerts. Sysmon 22 is ingested by the agent and has had no
+    detection coverage in this lab since it was first measured (see investigation 002). This closes
+    that gap.
+    The rule reads QueryName, not the channel timestamp: Sysmon writes event 22 to the log several
+    seconds after the query happens, so any timeline built from this rule must use the event's own
+    UtcTime field.
+references:
+    - https://attack.mitre.org/techniques/T1071/004/
+    - https://attack.mitre.org/techniques/T1048/
+author: Guillermo Tosetti
+date: 2026-09-17
+modified: 2026-09-17
+tags:
+    - attack.command-and-control
+    - attack.t1071.004
+    - attack.exfiltration
+    - attack.t1048
+logsource:
+    category: dns_query
+    product: windows
+detection:
+    long_encoded_label:
+        # A leftmost label of 20+ chars drawn only from the base32/base64 alphabet. Ordinary
+        # hostnames are shorter and contain vowels and hyphens in human patterns; encoded data
+        # does not. This is a heuristic, not a proof - it is meant to surface candidates a human
+        # then confirms by decoding the label.
+        QueryName|re: '^[A-Za-z0-9+/=_-]{20,}\.'
+    known_good:
+        # Content-delivery and telemetry hostnames legitimately use long encoded-looking labels.
+        # Scope these out by the parent domain, and keep the list under review.
+        QueryName|contains:
+            - '.akamai'
+            - '.cloudfront.net'
+            - '.azureedge.net'
+            - '.windowsupdate.com'
+            - '.trafficmanager.net'
+    condition: long_encoded_label and not known_good
+falsepositives:
+    - CDNs and cloud services that hash content into the subdomain. The known_good filter covers
+      the common ones; a new one shows up as a burst from a browser or updater image and is easy
+      to add.
+    - Some antivirus and EDR products encode lookups into DNS for reputation checks. If one is in
+      use, exclude its process image.
+level: medium
