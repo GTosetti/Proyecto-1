@@ -47,7 +47,7 @@
       "techniqueID": "T1543.003",
       "score": 3,
       "enabled": true,
-      "comment": "2026-08-08: a test service install alerted through Event ID 7045 from the System channel, while Event ID 4697 from the Security channel reached the SIEM and produced 0 alert documents. Detection depends entirely on one of the two available sources. Evidence: investigations/001-first-alert-triage.md."
+      "comment": "2026-08-08: a test service install alerted through Event ID 7045 from the System channel, while Event ID 4697 from the Security channel reached the SIEM and produced 0 alert documents. Detection depends entirely on one of the two available sources. Evidence: investigations/001-first-alert-triage.md. Re-measured 2026-09-17 from an elevated session: sc.exe create registered a service running cmd.exe as LocalSystem (CreateService SUCCESS), and its binPath executed even though the SCM returned error 1053 - the PsExec mechanism, where failing the service protocol does not prevent code running as SYSTEM. Security 4697 and System 7045 were both generated; only 7045 alerted, through rule 61138 at level 5, while a query for Event ID 4697 in wazuh-alerts-* returned 0 documents for the second time in this lab's history. Own rule drafted: win_security_susp_service_installation.yml."
     },
     {
       "techniqueID": "T1548.002",
@@ -117,9 +117,9 @@
     },
     {
       "techniqueID": "T1105",
-      "score": 1,
+      "score": 3,
       "enabled": true,
-      "comment": "Rule 92213 ('Executable file dropped in folder commonly used by malware', level 15) carries this mapping and fired 21 times - 1 on 2026-08-08, 5 on 2026-08-11, 12 on 2026-09-07, 3 on 2026-09-17 - and every one was a false positive on __PSScriptPolicyTest_*.ps1 written by the signed system powershell.exe. No tool transfer was ever staged, so what exists is the adjacent file-create mechanism, not the technique. Scored 1 rather than 3: a rule that has only ever fired on something else has not detected this. Tuning debt; the replacement rule is drafted and not deployed."
+      "comment": "Re-measured 2026-09-17 after the agent was reconfigured to forward the Defender operational channel. certutil.exe -urlcache -split -f against a .example.com URL was blocked before it could run (Access is denied) and Defender wrote 1116 x2 and 1117 x1 naming Trojan:Win32/Ceprolad.A, Severity Severe, detecting on the COMMAND LINE rather than on a payload. Those events reached the SIEM and alerted through rules 62123 (level 12) and 62124 (level 3) - the first alerts this technique has produced on its own activity here. Before the configuration change the entire alert index held zero documents from that channel, ever, and the only thing matching T1105 was rule 92213 firing on an adjacent PowerShell temp file (21 firings, all false positives; 39 more on 2026-09-17). Own rule drafted: proc_creation_win_lolbin_remote_download.yml, for the case where the AV is disabled or the command line is rewritten."
     },
     {
       "techniqueID": "T1531",
@@ -141,9 +141,9 @@
     },
     {
       "techniqueID": "T1685.005",
-      "score": 0,
+      "score": 3,
       "enabled": true,
-      "comment": "Numbered T1070.001 before the ATT&CK v18 regrouping under T1685; the old ID no longer places on a v18 matrix. Security Event ID 1102 has never been generated in this lab and no query has ever been run against it, so its detection path is untested - the gap is the missing exercise, not an empty query result. Planned; the base-limpia snapshot exists for the rollback."
+      "comment": "2026-09-17: wevtutil cl Security destroyed 64670 records and 58.07 MB of audit history from an elevated session; Security 1102 was generated and alerted through stock rule 63103 at level 5. Numbered T1070.001 before the ATT&CK v18 regrouping under T1685, and most third-party rule sets still use the old ID. Scored 3 on the definition used here, but the gap this technique exposes is severity rather than visibility: in the same window the __PSScriptPolicyTest false positive fired 39 times at level 15 and a PowerShell keyword false positive twice at level 14, so the destruction of the audit trail ranked 41 rows below noise. A measured detail: clearing the log does not reset the record counter - the 1102 carried RecordId 68663 while RecordCount fell to 9, which is a forensic signal an attacker cannot edit. Own rule drafted: win_security_audit_log_cleared.yml, at level high."
     },
     {
       "techniqueID": "T1484",
@@ -156,6 +156,18 @@
       "score": 0,
       "enabled": true,
       "comment": "Theory only, studied 2026-07-31. Not reproducible in this lab: there is no mail server. Three mitigations, two of which (SPF/DKIM/DMARC checks and user training) depend on parties the defender does not control. Numbered T1672 before the ATT&CK v18 regrouping under T1684."
+    },
+    {
+      "techniqueID": "T1003.001",
+      "score": 1,
+      "enabled": true,
+      "comment": "2026-09-17, from a genuinely elevated session (High integrity, Administrators enabled in the token): OpenProcess(0x1410) against lsass.exe was DENIED with Win32 error 5, because LSA protection is on by default on this build (RunAsPPL=2) and LSASS runs as a protected process. The mitigation worked. The detection did not exist to be tested: Sysmon Event ID 10 was never written. Two controls isolated why - 0x1000 on lsass was granted and logged nothing, 0x1410 on a non-protected process was granted and logged nothing - and the active config explains it: SwiftOnSecurity sysmon-config v74 ships ProcessAccess as an empty include block with the comment 'Can cause high system load, disabled by default'. The channel's whole history is 14445 events with 0 of Event ID 10. Scored 1, not 2: the only telemetry was adjacent (Security 4688 and Sysmon Event ID 1 for the process that made the attempt), so nothing mapped to the technique itself was generated or collected. Left unmeasured, and it is the question that matters on a hardened host: whether a DENIED request would appear as an Event ID 10 once ProcessAccess is instrumented. Own rule drafted: proc_access_win_lsass_memory_read.yml, inert until that config block is filled in."
+    },
+    {
+      "techniqueID": "T1490",
+      "score": 2,
+      "enabled": true,
+      "comment": "2026-09-17, authorised explicitly and run against a real shadow copy rather than simulated: one was created via Win32_ShadowCopy, confirmed with vssadmin list shadows, then destroyed with vssadmin delete shadows /all /quiet (exit 0), after which the count went 1 -> 0. Security 4688 and Sysmon Event ID 1 carried the full command line and reached the SIEM, where they matched only rule 67027, 'a process was created', at level 3, among 568 other process-creation rows in the same window - the textbook score-2 gap: not invisible, indistinguishable from noise. The System channel produced nothing from VSS or volsnap: the subsystem that lost the data does not report its own loss. Its standard mitigation M1018 cannot apply, because deleting shadow copies requires administrator and the attacker already is one, so the residual risk is entirely detection. Also measured: wmic.exe no longer exists on build 26200, so the classic 'wmic shadowcopy delete' variant is unexecutable here. Own rule drafted: proc_creation_win_shadow_copy_deletion.yml."
     }
   ],
   "gradient": {
@@ -193,11 +205,11 @@
     },
     {
       "name": "Scope",
-      "value": "23 techniques with measured evidence. Techniques this lab has not touched are absent rather than scored 0."
+      "value": "25 techniques with measured evidence. Techniques this lab has not touched are absent rather than scored 0."
     },
     {
       "name": "Measurement window",
-      "value": "2026-07-29 to 2026-09-07"
+      "value": "2026-07-29 to 2026-09-17"
     },
     {
       "name": "How scores were obtained",
@@ -205,15 +217,15 @@
     },
     {
       "name": "Honest coverage",
-      "value": "12 of 23 techniques (52%) had a rule fire on their own activity. T1105 is excluded from that count and scored 1: its mapped rule fired 21 times and all 21 were false positives on an adjacent PowerShell temp file. Only 3 firings came from a rule reading a pattern rather than a single event. Rules written by the author: 25 Sigma documents across 15 files, all drafted, none deployed to the manager - so techniques detected by a rule of the author's own: 0."
+      "value": "14 of 25 techniques (56%) had a rule fire on their own activity. Two of those were earned on 2026-09-17 by a configuration change rather than by a new rule: forwarding the Defender operational channel moved T1105 from 1 to 3, and the first elevated phase moved T1685.005 from 0 to 3. Only 3 firings came from a rule reading a pattern rather than a single event, and the two most severe alerts of that elevated phase were both false positives (level 15 x39 and level 14 x2). Rules written by the author: 28 Sigma documents across 18 files, all drafted, none deployed to the manager - so techniques detected by a rule of the author's own: 0."
     },
     {
       "name": "Largest uncovered tactic",
-      "value": "Stealth (TA0005, called Defense Evasion before ATT&CK v18): 4 of 5 techniques uncovered, 5 of 6 if T1548.002 is counted here as well as under Privilege Escalation. Discovery is level with it at 4 of 5, and three of those four gaps (T1016, T1033, T1087) are rule gaps: the activity ran, the telemetry was generated and forwarded, and only a catch-all matched. The fourth, T1046, is an architecture gap that needs a network sensor, not a rule."
+      "value": "Discovery, at 4 of 5 techniques uncovered, and three of those four gaps (T1016, T1033, T1087) are rule gaps: the activity ran, the telemetry was generated and forwarded, and only a catch-all matched. The fourth, T1046, is an architecture gap that needs a network sensor, not a rule. Stealth (TA0005, called Defense Evasion before ATT&CK v18) was level with it until 2026-09-17, when T1685.005 was executed and alerted, taking it to 3 of 5 uncovered - 4 of 6 if T1548.002 is counted here as well as under Privilege Escalation."
     },
     {
       "name": "Caveat",
-      "value": "A coverage claim built by searching an alert index is bounded by the ruleset, not by what the endpoint produced: on 2026-08-08 about 2,100 events reported to the manager left 835 alerts indexed; on 2026-08-11, 172 events generated produced 36 alerts (a first, window-clipped pass reported 167 and 27)."
+      "value": "A coverage claim built by searching an alert index is bounded by the ruleset, not by what the endpoint produced: on 2026-08-08 about 2,100 events reported to the manager left 835 alerts indexed; on 2026-08-11, 172 events generated produced 36 alerts (a first, window-clipped pass reported 167 and 27); on 2026-09-17 the elevated phase produced 1066 indexed alerts, of which 568 were level-3 process creations and 41 were the two recurring false positives."
     }
   ],
   "showTacticRowBackground": true,

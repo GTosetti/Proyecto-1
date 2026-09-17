@@ -43,7 +43,7 @@ So the rule for rules here is:
 > in layer 1 or layer 2, a rule cannot fix it, and pretending otherwise is worse than leaving the
 > gap open — it puts a green tick over a blind spot.
 
-Two consequences, both visible in this folder: it is small — 25 rule documents, each traceable to a
+Two consequences, both visible in this folder: it is small — 28 rule documents, each traceable to a
 dated measurement — and it contains a section for gaps that are deliberately **not** being closed
 with a rule.
 
@@ -120,7 +120,7 @@ Validation status vocabulary — used strictly:
 | `validated` | The rule was deployed, the source activity was re-run, and a query returned the alert. The entry records the date and the query. |
 | `tuning` | Deployed and firing, but its false-positive rate has not been measured yet, so its level is not trusted. |
 
-`detections/sigma/` holds **15 files containing 25 rule documents**, eight of which are correlation
+`detections/sigma/` holds **18 files containing 28 rule documents**, eight of which are correlation
 rules. A file holds more than one document when a correlation needs its base events declared
 alongside it; the `Docs` column gives the count, and the base documents ship at level
 `informational` because they exist to be counted, not triaged.
@@ -143,8 +143,11 @@ alongside it; the `Docs` column gives the count, and the base documents ship at 
 | [`sigma/proc_creation_win_lolbin_remote_download.yml`](sigma/proc_creation_win_lolbin_remote_download.yml) | 1 | `certutil`, `bitsadmin` or `regsvr32` pulling a file from an `http`/`https` URL — the LOLBin download. Written because Defender caught the `certutil` and `regsvr32` command lines on 2026-09-17 but its verdict never reached the SIEM | T1105, T1218.010 | `drafted` |
 | [`sigma/dns_query_win_high_entropy_subdomain.yml`](sigma/dns_query_win_high_entropy_subdomain.yml) | 1 | Sysmon Event ID 22: a DNS query whose leftmost label is 20+ chars of base32/base64 alphabet, the shape of data over DNS, with a CDN allowlist. Closes the Sysmon 22 gap re-measured on 2026-09-17 (5 beacons, 0 alerts) | T1071.004, T1048 | `drafted` |
 | [`sigma/win_security_local_group_enumeration_burst.yml`](sigma/win_security_local_group_enumeration_burst.yml) | 2 (1 correlation) | Security 4798/4799 as an informational base event filtered of the system SIDs, plus a `event_count` correlation of 10+ under one `SubjectLogonId` in 60 s — the SharpHound-shaped enumeration. Closes the 4798/4799 gap (7 events, 0 alerts, 2026-09-17) | T1069.001, T1087.001 | `drafted` |
+| [`sigma/proc_access_win_lsass_memory_read.yml`](sigma/proc_access_win_lsass_memory_read.yml) | 1 | Sysmon Event ID 10: a handle opened on `lsass.exe` with memory-read rights, filtered of the agents that legitimately read it. Inert until Sysmon's `ProcessAccess` block is filled in — the deployed SwiftOnSecurity v74 config ships it as an empty `include`, which is why 0 of 14445 Sysmon events on the endpoint are Event ID 10 (2026-09-17) | T1003.001 | `drafted` |
+| [`sigma/proc_creation_win_shadow_copy_deletion.yml`](sigma/proc_creation_win_shadow_copy_deletion.yml) | 1 | `vssadmin`, `wbadmin`, `bcdedit` or `Win32_ShadowCopy` destroying recovery capability — the ransomware precursor. Written because a real deletion (shadow copy count 1 → 0, 2026-09-17) matched only stock rule 67027 at level 3, among 568 other process-creation rows | T1490 | `drafted` |
+| [`sigma/win_security_audit_log_cleared.yml`](sigma/win_security_audit_log_cleared.yml) | 1 | Security 1102. Closes a severity gap rather than a visibility one: the stock ruleset already alerts at level 5, while 64670 destroyed records ranked below 41 false positives at levels 15 and 14 in the same window (2026-09-17) | T1685.005 | `drafted` |
 
-**Status, stated plainly:** all 25 documents pass `sigma check` with 0 errors, and they convert — 9
+**Status, stated plainly:** all 28 documents pass `sigma check` with 0 errors, and they convert — 12
 files under the `opensearch_lucene` backend, the 5 files carrying `stats` correlations under `esql`,
 and the temporal RDP rule under `open_search_ppl` once field aliases are applied. **None of them has
 been deployed to the lab manager, so none is `validated` in the sense defined above, and the count of

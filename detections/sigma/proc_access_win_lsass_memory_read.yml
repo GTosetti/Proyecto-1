@@ -1,0 +1,111 @@
+title: LSASS Memory Read Access From An Unexpected Process
+id: 61b6a62f-a6b6-429a-9433-fff2c3558db0
+name: proc_access_win_lsass_memory_read
+status: experimental
+description: |
+  Sysmon Event ID 10, a process opening a handle to lsass.exe with memory-read rights. This is
+  the canonical credential-dumping signal: mimikatz, procdump and comsvcs.dll MiniDump all need
+  PROCESS_VM_READ on LSASS to reach the credential material in its memory.
+  This rule is written from a measured hole rather than from the technique description, and the
+  hole is not where it is usually assumed to be. On 2026-09-17 the lab requested
+  OpenProcess(0x1410) against lsass.exe from an elevated session and then looked for the event.
+  Two separate controls were run to find out why nothing appeared:
+  control 1 asked for 0x1000 (PROCESS_QUERY_LIMITED_INFORMATION), which LSA protection permits;
+  the handle was granted and Sysmon still logged nothing. Control 2 asked for 0x1410 against a
+  non-protected process; the handle was granted and Sysmon still logged nothing. Reading the
+  active configuration settled it: the deployed config is SwiftOnSecurity sysmon-config version
+  74 (2021-07-08), and its ProcessAccess block is
+  <ProcessAccess onmatch="include"> with no rules inside it, carrying the upstream comment
+  "Can cause high system load, disabled by default". An include block with no rules matches
+  nothing, so Event ID 10 is never written. The whole history of the channel on this endpoint
+  confirms it: 14445 events, of which zero are Event ID 10, against 3182 of Event ID 1.
+  So this rule cannot fire on this endpoint as deployed, and saying otherwise would be the
+  interesting kind of wrong: a SOC can hold a correct credential-dumping rule, see no alerts,
+  and conclude it is not being attacked, when the truth is that the event feeding the rule was
+  switched off for performance reasons five years ago by a config the industry treats as a
+  sensible default. Enabling ProcessAccess for lsass.exe is the prerequisite, and it is a
+  configuration change, not a detection change - see the deployment note in the logsource
+  definition.
+  One thing this measurement does NOT establish, stated because the evidence does not reach
+  that far: whether a DENIED handle request produces an Event ID 10 with a low GrantedAccess
+  once ProcessAccess is instrumented. On this endpoint LSA protection is on (RunAsPPL=2) and
+  0x1410 against lsass returns Win32 error 5, so the interesting case for a hardened host -
+  does the SOC see the attempt that the mitigation blocked? - remains unmeasured here. If
+  denied attempts are not logged, a hardened endpoint is also a quieter one, and that tradeoff
+  deserves its own measurement.
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+  - https://learn.microsoft.com/en-us/sysinternals/downloads/sysmon
+  - https://github.com/SwiftOnSecurity/sysmon-config
+  - >-
+    https://learn.microsoft.com/en-us/windows-server/security/credentials-protection-and-management/configuring-additional-lsa-protection
+  - >-
+    Lab measurement 2026-09-17: OpenProcess(0x1410) on lsass denied with Win32 error 5 under RunAsPPL=2; two
+    controls (0x1000 on lsass granted, 0x1410 on a non-protected process granted) produced no Event ID 10;
+    active config SwiftOnSecurity v74 has an empty ProcessAccess include block; 0 of 14445 Sysmon events on
+    the endpoint are Event ID 10
+author: Proyecto-1 home SOC lab
+date: 2026-09-17
+modified: 2026-09-17
+tags:
+  - attack.credential-access
+  - attack.t1003.001
+logsource:
+  category: process_access
+  product: windows
+  definition: >-
+    Requires Sysmon with ProcessAccess instrumented for lsass.exe. The widely deployed
+    SwiftOnSecurity config ships that block empty on purpose, so this rule is inert until the
+    block is filled in. A minimal enabling change is an include rule on TargetImage ending in
+    \lsass.exe, with SourceImage excludes for the local security and monitoring agents that
+    legitimately read LSASS, which is where the "high system load" warning comes from.
+detection:
+  selection_target:
+    TargetImage|endswith: '\lsass.exe'
+  selection_access:
+    GrantedAccess:
+      - '0x1010'
+      - '0x1038'
+      - '0x1410'
+      - '0x1418'
+      - '0x1438'
+      - '0x143a'
+      - '0x1f0fff'
+      - '0x1f1fff'
+      - '0x1f2fff'
+      - '0x1f3fff'
+      - '0x1fffff'
+  filter_known_readers:
+    SourceImage|endswith:
+      - '\MsMpEng.exe'
+      - '\wmiprvse.exe'
+      - '\taskmgr.exe'
+      - '\VsTskMgr.exe'
+      - '\csrss.exe'
+      - '\wininit.exe'
+  condition: selection_target and selection_access and not filter_known_readers
+fields:
+  - SourceImage
+  - SourceProcessId
+  - GrantedAccess
+  - CallTrace
+  - TargetImage
+falsepositives:
+  - >-
+    Endpoint protection and monitoring products read LSASS as part of their normal work. Microsoft Defender
+    (MsMpEng.exe) is filtered here; any third-party EDR, backup agent or vulnerability scanner added to the
+    fleet will need its own allowlist entry, matched on the full image path rather than the file name so a
+    dropped binary cannot inherit the exemption by naming itself after an agent.
+  - >-
+    Task Manager reads LSASS when a user opens the Details tab, which makes an interactive administrator a
+    recurring low-value match. Filtered by image path, with the same caveat as above.
+  - >-
+    CallTrace is the field that separates the boring matches from the real ones - an access whose call trace
+    is entirely signed Windows modules is a different proposition from one routed through an unsigned or
+    unbacked memory region - but it is also the field most easily faked, so treat an innocent-looking
+    CallTrace as weak evidence and a suspicious one as strong.
+  - >-
+    No false positive rate has been observed for this rule in the lab, because the underlying event has never
+    been generated here at all. The GrantedAccess list is taken from the technique and from public rule sets,
+    not from a local measurement, and is labelled as such.
+level: high

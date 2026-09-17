@@ -88,7 +88,7 @@ sigma list pipelines
 sigma check -i detections/sigma/
 ```
 
-`sigma check` over the whole directory — 15 files holding 25 rule documents, 8 of them
+`sigma check` over the whole directory — 18 files holding 28 rule documents, 8 of them
 correlation rules — reports:
 
 ```

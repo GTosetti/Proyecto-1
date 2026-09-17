@@ -1,0 +1,109 @@
+title: Shadow Copy Deletion Via Built-In Recovery Tooling
+id: bb3d25fb-70c1-41e9-83e1-059f2f835a58
+name: proc_creation_win_shadow_copy_deletion
+status: experimental
+description: |
+  Deletion or resizing of volume shadow copies through the tools Windows ships for the purpose.
+  This is the step almost every ransomware family performs immediately before encrypting, because
+  without shadow copies there is no "Restore previous versions" and the victim's cheapest recovery
+  path is gone. It is also the clearest example in this repository of a technique whose standard
+  mitigation cannot work: M1018 says restrict permissions, but deleting shadow copies already
+  requires administrator, and by this point in the intrusion the attacker is one. Prevention has
+  nothing left to offer, so the whole residual risk lands on detection.
+  Measured in the lab on 2026-09-17 with a real deletion, not a simulated one: a shadow copy was
+  created via Win32_ShadowCopy (ShadowID {D434786B-...}), confirmed present with vssadmin list
+  shadows, then destroyed with vssadmin delete shadows /all /quiet, exit code 0, after which the
+  shadow copy count went from 1 to 0. The destruction was real and verified.
+  What the telemetry showed is the reason this rule exists. The endpoint produced Security 4688
+  and Sysmon Event ID 1 for vssadmin.exe, both carrying the full command line, and the System
+  channel produced nothing at all from VSS or volsnap - the subsystem that lost the data does not
+  report its own loss. In the SIEM those events matched only rule 67027, "a process was created",
+  at level 3, alongside 567 other process-creation events in the same window. So the technique is
+  not invisible, which would at least be legible as a gap; it is indistinguishable from the
+  loudest, most ignorable noise in the queue. An analyst triaging by severity would reach a
+  destroyed backup capability after roughly 568 level-3 rows and two false positives at levels 15
+  and 14.
+  A second measured finding shapes the condition: wmic.exe does NOT exist on this build
+  (Windows 11 25H2, 26200), so the classic wmic shadowcopy delete variant is unexecutable here.
+  It is kept in the rule because detections outlive builds and the fleet will not be uniform, but
+  a rule that only looked for wmic would cover nothing on a current endpoint - which is exactly
+  the shape of a detection that passes review and fails in production.
+  The deliberate omission is the API path. Modern ransomware increasingly calls the VSS COM
+  interface or WMI directly instead of spawning vssadmin.exe, and that variant creates no process
+  to match and was not exercised here. This rule closes the command-line path only, and the
+  honest statement of its limit is that an attacker who reads it knows what to use instead.
+references:
+  - https://attack.mitre.org/techniques/T1490/
+  - https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/vssadmin-delete-shadows
+  - >-
+    Lab measurement 2026-09-17: shadow copy count 1 -> 0 after vssadmin delete shadows /all /quiet; Security
+    4688 and Sysmon Event ID 1 generated with full command line; zero VSS or volsnap events in the System
+    channel; only stock rule 67027 at level 3 matched in wazuh-alerts-*; wmic.exe absent from
+    System32\wbem on build 26200
+author: Proyecto-1 home SOC lab
+date: 2026-09-17
+modified: 2026-09-17
+tags:
+  - attack.impact
+  - attack.t1490
+logsource:
+  category: process_creation
+  product: windows
+  definition: >-
+    Satisfied by either Sysmon Event ID 1 or Security 4688 with command-line auditing enabled. Both were
+    verified present on the lab endpoint for this technique, which matters because a rule keyed on the
+    command line is worthless if the command line is not being recorded.
+detection:
+  selection_vssadmin:
+    Image|endswith: '\vssadmin.exe'
+    CommandLine|contains:
+      - 'delete shadows'
+      - 'resize shadowstorage'
+  selection_wmic:
+    Image|endswith: '\wmic.exe'
+    CommandLine|contains: 'shadowcopy'
+  selection_wbadmin:
+    Image|endswith: '\wbadmin.exe'
+    CommandLine|contains:
+      - 'delete catalog'
+      - 'delete systemstatebackup'
+      - 'delete backup'
+  selection_bcdedit:
+    Image|endswith: '\bcdedit.exe'
+    CommandLine|contains:
+      - 'recoveryenabled no'
+      - 'bootstatuspolicy ignoreallfailures'
+  selection_powershell_cim:
+    CommandLine|contains|all:
+      - 'Win32_ShadowCopy'
+      - 'Delete'
+  condition: >-
+    selection_vssadmin or selection_wmic or selection_wbadmin or selection_bcdedit or
+    selection_powershell_cim
+fields:
+  - Image
+  - CommandLine
+  - ParentImage
+  - ParentCommandLine
+  - User
+  - IntegrityLevel
+falsepositives:
+  - >-
+    Backup software legitimately prunes shadow copies and resizes shadow storage, and disk-cleanup routines
+    do the same on a schedule. This is the dominant false positive and it is not distinguishable by command
+    line alone - vssadmin delete shadows looks identical whether a backup product or an intruder ran it.
+    The separating signal is the parent process and the account: a maintenance product running as SYSTEM on
+    its schedule versus an interactive shell, a remote-execution service or an unusual account. Allowlist by
+    ParentImage, never by disabling the rule.
+  - >-
+    Administrators reclaiming disk space by hand, which is legitimate and produces an identical command line
+    from an interactive session. On a small estate this is a reason to alert-and-ask rather than to tune the
+    rule away; on a large one it is a reason to route by asset criticality.
+  - >-
+    The bcdedit clauses catch recovery-disabling commands that legitimate imaging and deployment tooling also
+    issues, so they are noisier than the vssadmin clause on any host that gets re-imaged.
+  - >-
+    Not observed in this lab: no false positive rate is known locally, because the only executions of these
+    commands here were deliberate. The wmic and wbadmin clauses have never been exercised at all - wmic.exe
+    does not exist on the build - and are written from the technique, not from a measurement.
+level: high

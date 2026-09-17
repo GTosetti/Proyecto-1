@@ -1,0 +1,76 @@
+title: Security Audit Log Cleared
+id: 5f3d37c2-3aca-40a3-8e59-62f998b1fc8c
+name: win_security_1102_audit_log_cleared
+status: experimental
+description: |
+  Security Event ID 1102, written by Windows when the Security event log is cleared. There is no
+  routine reason for this to happen on a workstation. It is the anti-forensic step an intruder
+  takes after achieving their objective, and it requires administrator, so the event doubles as
+  proof that whoever did it already held the privilege.
+  Unlike most rules here, this one does not close a visibility gap - it closes a SEVERITY gap,
+  and that distinction is the point. Measured in the lab on 2026-09-17: wevtutil cl Security
+  destroyed 64670 records and 58.07 MB of audit history, the 1102 was generated as expected, it
+  reached the SIEM, and the stock ruleset alerted on it - rule 63103, "The audit log was cleared",
+  at level 5. In the same window the recurring __PSScriptPolicyTest false positive fired 39 times
+  at level 15 and a PowerShell keyword false positive fired twice at level 14. An analyst working
+  that queue top-down by severity meets 41 false positives before reaching the destruction of the
+  audit trail. The event was never missing; it was outranked.
+  So the value of this rule is the level, and the useful lesson is that "we have a rule for that"
+  and "an analyst will see it in time" are different claims.
+  A measured detail worth keeping, because it contradicts the assumption the lab started with:
+  clearing the log does NOT reset the record counter. After the clear the log held 9 records while
+  the 1102 itself carried RecordId 68663, continuing from 68660. That asymmetry is a durable
+  forensic signal - a log whose newest RecordId vastly exceeds its RecordCount has been cleared,
+  and unlike the 1102 itself this is a property of the log file rather than an entry an attacker
+  can target. It also means a detection can be built on the discontinuity, not only on the event.
+  The complementary signal not covered here: an attacker who stops the EventLog service, or clears
+  a channel other than Security, produces a different event or none. This rule covers the Security
+  channel clear only.
+references:
+  - https://attack.mitre.org/techniques/T1070/001/
+  - https://attack.mitre.org/techniques/T1485/
+  - >-
+    https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/auditing/event-1102
+  - >-
+    Lab measurement 2026-09-17: wevtutil cl Security removed 64670 records (58.07 MB); 1102 generated with
+    RecordId 68663 while RecordCount fell to 9; alerted in wazuh-alerts-* via stock rule 63103 at level 5,
+    against 39 level-15 and 2 level-14 false positives in the same window
+author: Proyecto-1 home SOC lab
+date: 2026-09-17
+modified: 2026-09-17
+tags:
+  - attack.stealth
+  - attack.t1685.005
+logsource:
+  product: windows
+  service: security
+  definition: >-
+    Event ID 1102 is written by the event log service itself and does not depend on an audit subcategory
+    being enabled, which makes it one of the few events that cannot be switched off from auditpol. It is
+    written to the newly emptied log, so it survives the very action it reports.
+detection:
+  selection:
+    EventID: 1102
+  condition: selection
+fields:
+  - SubjectUserName
+  - SubjectDomainName
+  - SubjectLogonId
+  - Channel
+falsepositives:
+  - >-
+    Deliberate administrative clearing, most often while troubleshooting or preparing a machine for imaging.
+    This is the only realistic benign cause and it should still be reviewed rather than filtered: the
+    correct response is to confirm the change ticket, not to stop alerting. Filtering this rule by account
+    defeats it, because the account an intruder uses is an administrator account by definition.
+  - >-
+    Lab self-inflicted matches: this repository's own emulation runs clear the log on purpose, so the lab's
+    own history contains matches that are not attacks. Worth naming because it is the same trap as
+    allowlisting an admin account - the evidence that the rule works and the evidence that it is noisy can
+    come from the same row.
+  - >-
+    SubjectLogonId is the field that makes triage cheap, because it joins the clear back to the 4624 that
+    started the session and therefore to everything else that session did before it covered its tracks. In
+    this lab that join had to be made in the SIEM, since the local 4624 was inside the 64670 records the
+    clear destroyed.
+level: high
